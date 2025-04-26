@@ -1,0 +1,14 @@
+extern "C" void** __cudaRegisterFatBinary(void*);
+extern "C" void __cudaUnregisterFatBinary(void*);
+
+static void** __cudaFatCubinHandle;
+
+__attribute__((constructor))
+static void registerFatbin() {
+    __cudaFatCubinHandle = __cudaRegisterFatBinary((void*)device_fatbin);
+}
+
+__attribute__((destructor))
+static void unregisterFatbin() {
+    __cudaUnregisterFatBinary(__cudaFatCubinHandle);
+}
