@@ -2,7 +2,7 @@ if(WIN32 OR CYGWIN)
   set(LLVM_LINK_COMPONENTS Core Support)
 endif()
 
-add_llvm_loadable_module( LLVMCudaAdvisor
+  add_llvm_library( LLVMCudaAdvisor MODULE BUILDTREE_ONLY
   LLVM_advisor.cpp
 
   DEPENDS
