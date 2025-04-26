@@ -1,6 +1,6 @@
-SM =sm_35
-CP =compute_35
-LLVM = /home/dshen/llvm/
+SM =sm_75
+CP =compute_75
+LLVM = /home/nitya/llvm-project
 
 PASS =$(LLVM)/build/lib/LLVMCudaAdvisor.so
 UPATH =$(LLVM)/llvm/lib/Transforms/CUDAAdvisor/src/
