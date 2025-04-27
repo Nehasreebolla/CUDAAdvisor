@@ -60,7 +60,7 @@ $(BIN_FILE).o: $(BIN_FILE).ll
 # GPU Side
 $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll: $(SRC_FILE)
 
-	$(CLANGPP) -x cuda --cuda-device-only -emit-llvm -S \
+	$(CLANGPP) -g -x cuda --cuda-device-only -emit-llvm -S \
 	--cuda-gpu-arch=$(SM) \
 	-I/usr/local/cuda/include \
 	-include __clang_cuda_runtime_wrapper.h \
@@ -74,6 +74,7 @@ $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll: $(SRC_FILE)
 
 $(BIN_FILE).ptx: $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll
 	$(LLC) -march=nvptx64 -mcpu=$(SM) $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll -o $(BIN_FILE).ptx
+	sed -i -E 's/\.file[[:space:]]+([0-9]+)[[:space:]]+"([^"]+)"[[:space:]]+"([^"]+)"/.file \1 "\2\/\3"/' $(BIN_FILE).ptx
 
 $(BIN_FILE).ptx.o: $(BIN_FILE).ptx
 	ptxas -m64 --gpu-name=$(SM) $(BIN_FILE).ptx -o $(BIN_FILE).ptx.o
