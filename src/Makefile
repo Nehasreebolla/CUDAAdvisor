@@ -1,4 +1,7 @@
-LLVM_DIR := /home/nitya/llvm-project/build
+include ../env.mk
+include testtask.mk
+
+LLVM_DIR := $(LLVM)/build
 CLANG := $(LLVM_DIR)/bin/clang
 CLANGPP := $(LLVM_DIR)/bin/clang++
 OPTCC := $(LLVM_DIR)/bin/opt
@@ -6,13 +9,11 @@ LLC := $(LLVM_DIR)/bin/llc
 LLVM_LINK := $(LLVM_DIR)/bin/llvm-link
 LLVM_DIS := $(LLVM_DIR)/bin/llvm-dis
 
-include ../env.mk
-include testtask.mk
 
-SRC=add_vector.cu
-EXE=add_vector# has to be same as the name of the source file without the extension
+EXE=add_vector
+SRC=$(EXE).cu
 PASS=$(LLVM_DIR)/lib/LLVMCudaAdvisor.so
-INSTRU=-instru-host -instru-kernel-memory
+INSTRU=-instru-host 
 CFLAGS = --gcc-toolchain=/usr   -L/usr/local/cuda/lib64   -L/usr/lib/gcc/x86_64-linux-gnu/10   -lcudart -lstdc++   -isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
 DEBUG = -g
 OPT = -O2 -std=c++11
@@ -22,7 +23,7 @@ PRINT_SRC=print.cpp
 CALC_SRC=calc.cpp
 ANSF_SRC=ansf.cu
 HOST_SO =libprint.so
-GC = g++ -std=c++11 #for unordered_map
+GC = g++ -std=c++11 # for unordered_map
 
 
 all: $(HOST_SO) device_fatbin.cu opt_host.bc
@@ -44,8 +45,46 @@ all: $(HOST_SO) device_fatbin.cu opt_host.bc
 # -lcudart -L/usr/local/cuda/lib64\
 # $(CFLAGS)
 
-run:
-	$(CLANG) -o final_executable host.bc device.ptx -fopenmp -fopenmp-targets=nvptx64 $(CFLAGS)
+
+
+BIN_FILE=axpy
+SRC_FILE=$(BIN_FILE).cu
+
+main: $(BIN_FILE)
+
+# Host Side
+$(BIN_FILE).ll: $(SRC_FILE) $(BIN_FILE).fatbin
+	$(CLANGPP) -stdlib=libc++ -Wall -Werror $(BIN_FILE).cu -march=x86-64 --cuda-host-only -relocatable-pch \
+        -Xclang -fcuda-include-gpubinary -Xclang $(BIN_FILE).fatbin -S -g -c -emit-llvm\
+		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
+
+$(BIN_FILE).o: $(BIN_FILE).ll
+	$(LLC) -march=x86-64 $(BIN_FILE).ll -o $(BIN_FILE).s
+	$(CLANGPP) -c -Wall $(BIN_FILE).s -o $(BIN_FILE).o
+
+# GPU Side
+$(BIN_FILE)-cuda-nvptx64-nvidia-cuda-sm_75.ll: $(SRC_FILE)
+	$(CLANGPP) -x cuda -stdlib=libc++ -Wall -Werror $(BIN_FILE).cu --cuda-device-only \
+        --cuda-gpu-arch=sm_75 -S -g -emit-llvm\
+		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
+
+$(BIN_FILE).ptx: $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-sm_75.ll
+	$(LLC) -march=nvptx64 -mcpu=sm_75 -mattr=+ptx64 $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-sm_75.ll -o $(BIN_FILE).ptx
+
+$(BIN_FILE).ptx.o: $(BIN_FILE).ptx
+	ptxas -m64 --gpu-name=sm_75 $(BIN_FILE).ptx -o $(BIN_FILE).ptx.o
+
+$(BIN_FILE).fatbin: $(BIN_FILE).ptx.o
+	fatbinary --64 --create $(BIN_FILE).fatbin --image=profile=sm_75,file=$(BIN_FILE).ptx.o \
+        --image=profile=compute_75,file=$(BIN_FILE).ptx -link
+
+$(BIN_FILE)_dlink.o: $(BIN_FILE).fatbin
+	nvcc $(BIN_FILE).fatbin -gencode arch=compute_75,code=sm_75 \
+        -dlink -o $(BIN_FILE)_dlink.o -lcudart -lcudart_static -lcudadevrt
+
+# Link both object files together (either nvcc or clang works here):
+$(BIN_FILE): $(BIN_FILE).o $(BIN_FILE)_dlink.o
+	nvcc $(BIN_FILE).o $(BIN_FILE)_dlink.o -o $(BIN_FILE) -arch=sm_75 -L/usr/lib/llvm-14/lib -lc++
 
 host.bc: $(SRC)
 # Compile host code to LLVM bitcode
@@ -59,7 +98,7 @@ device.bc: $(SRC)
 # Compile device code to LLVM bitcode
 	$(CLANGPP) -O0 -emit-llvm -c -g $(SRC) -o device.bc --cuda-device-only \
 		--cuda-path=/usr/local/cuda \
-		--cuda-gpu-arch=sm_75 \
+		--cuda-gpu-arch=$(SM) \
 		-I/usr/local/cuda/include\
 		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
 
@@ -68,7 +107,7 @@ linked_device.bc: device.bc ansf.bc
 
 opt_host.bc: host.bc
 # cp host.bc opt_host.bc
-	$(OPTCC) -enable-new-pm=0 -load $(PASS) -device-pass -fname=my_func -line_range=12-25 host.bc -o opt_host.bc
+	$(OPTCC) -enable-new-pm=0 -load $(PASS) $(INSTRU) host.bc -o opt_host.bc
 
 opt_device.bc: linked_device.bc
 # cp linked_device.bc opt_device.bc
@@ -76,11 +115,11 @@ opt_device.bc: linked_device.bc
 
 device.ptx: opt_device.bc
 # Compile device code to PTX
-	$(LLC) -march=nvptx64 -mcpu=sm_75 -filetype=asm opt_device.bc -o device.ptx
-	ptxas --gpu-name $(SM) device.ptx -o device.o -v -maxrregcount=31 #for verbose, resources check
+	$(LLC) -march=nvptx64 -mcpu=$(SM) -filetype=asm opt_device.bc -o device.ptx
+
 
 device.fatbin: device.ptx
-	fatbinary --create=device.fatbin --image=profile=compute_75,file=device.ptx  --compress=true
+	fatbinary --create=device.fatbin --image=profile=$(CP),file=device.ptx  --compress=true
 
 device_fatbin.cu: device.fatbin
 	xxd -i device.fatbin > device_fatbin.cu
@@ -102,7 +141,7 @@ ansf.bc :  $(ANSF) $(UPATH)/../common.h  $(UPATH)/types.h
 	$(CLANGPP) $(DEBUG) $(OPT) -c --cuda-device-only -emit-llvm $(ANSF_SRC) -o ansf.bc --cuda-path=/usr/local/cuda   --cuda-gpu-arch=$(SM)   $(CFLAGS)
 
 cu:
-	$(CLANG) --version
+	$(CLANGPP) --version
 	$(CLANGPP) $(SRC) -o $(EXE)   --cuda-path=/usr/local/cuda   --cuda-gpu-arch=$(SM) $(CFLAGS)
 
 

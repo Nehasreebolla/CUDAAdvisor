@@ -2997,12 +2997,6 @@ namespace{
 	// }; //end of pass
 }
 
-char device_pass::ID = 0;
-static RegisterPass<device_pass> Y("device-pass", "load/store instrumentation of device.bc", false, false);
-
-char host_pass::ID = 0;
-static RegisterPass<host_pass> YY("host-pass", "instrumentation of host.bc for final result", false, false);
-
 
 char instru_host::ID = 0;
 static RegisterPass<instru_host> X("instru-host", "load/store and call path instrumentation", false, false);
