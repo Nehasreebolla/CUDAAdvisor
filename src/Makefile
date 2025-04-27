@@ -9,12 +9,21 @@ LLC := $(LLVM_DIR)/bin/llc
 LLVM_LINK := $(LLVM_DIR)/bin/llvm-link
 LLVM_DIS := $(LLVM_DIR)/bin/llvm-dis
 
+
+# You can use these if you set PATH=$PATH:$(LLVM_DIR)/bin
+# Run & Add this command to .bashrc file `export PATH=$PATH:$(LLVM_DIR)/bin`
 CLANG := clang
 CLANGPP := clang++
 OPTCC := opt
 LLC := llc
 LLVM_LINK := llvm-link
 LLVM_DIS := llvm-dis
+
+# Define source files for the shared library
+PRINT_SRC=print.cpp
+CALC_SRC=calc.cpp
+ANSF_SRC=ansf.cu
+HOST_SO =libprint.so
 
 EXE=add_vector
 SRC=$(EXE).cu
@@ -23,16 +32,71 @@ INSTRU=-instru-host
 CFLAGS = -Wnvcc-compat --gcc-toolchain=/usr   -L/usr/local/cuda/lib64   -L/usr/lib/gcc/x86_64-linux-gnu/10   -lcudart -lstdc++   -isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
 DEBUG = -g
 OPT = -O2 -std=c++11
-
-# Define source files for the shared library
-PRINT_SRC=print.cpp
-CALC_SRC=calc.cpp
-ANSF_SRC=ansf.cu
-HOST_SO =libprint.so
 GC = g++ -std=c++11 # for unordered_map
 
+## Used in make all
+PASS_NAME ?= -my-rand
+PASS_SO ?= $(LLVM_DIR)/lib/LLVMCudaAdvisor.so
+BIN_FILE=axpy
+SRC_FILE=$(BIN_FILE).cu
 
-all: $(HOST_SO) device_fatbin.cu opt_host.bc
+all: $(BIN_FILE)
+
+# Host Side
+$(BIN_FILE).ll: $(SRC_FILE) $(BIN_FILE).fatbin
+	$(CLANGPP) -stdlib=libc++ -Wall -Werror $(BIN_FILE).cu -march=x86-64 --cuda-host-only -relocatable-pch \
+        -Xclang -fcuda-include-gpubinary -Xclang $(BIN_FILE).fatbin -S -g -c -emit-llvm\
+		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include\
+		-fPIC
+# Instrument host side code
+	$(OPTCC) -enable-new-pm=0  -S -load $(PASS_SO) -$(PASS_NAME) \
+		$(BIN_FILE).ll -o $(BIN_FILE).ll
+
+
+$(BIN_FILE).o: $(BIN_FILE).ll
+	$(LLC) -march=x86-64 -relocation-model=pic $(BIN_FILE).ll -o $(BIN_FILE).s
+	$(CLANGPP) -c -Wall -fPIC $(BIN_FILE).s -o $(BIN_FILE).o
+
+# GPU Side
+$(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll: $(SRC_FILE)
+
+	$(CLANGPP) -x cuda --cuda-device-only -emit-llvm -S \
+	--cuda-gpu-arch=$(SM) \
+	-I/usr/local/cuda/include \
+	-include __clang_cuda_runtime_wrapper.h \
+	-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include \
+	$(BIN_FILE).cu -o $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll
+
+# Instrument GPU side code
+	$(OPTCC) -enable-new-pm=0  -S -load $(PASS_SO) -$(PASS_NAME) \
+		$(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll -o $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll
+
+
+$(BIN_FILE).ptx: $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll
+	$(LLC) -march=nvptx64 -mcpu=$(SM) $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).ll -o $(BIN_FILE).ptx
+
+$(BIN_FILE).ptx.o: $(BIN_FILE).ptx
+	ptxas -m64 --gpu-name=$(SM) $(BIN_FILE).ptx -o $(BIN_FILE).ptx.o
+
+$(BIN_FILE).fatbin: $(BIN_FILE).ptx.o
+	fatbinary --64 --create $(BIN_FILE).fatbin --image=profile=$(SM),file=$(BIN_FILE).ptx.o \
+        --image=profile=$(CP),file=$(BIN_FILE).ptx -link
+
+$(BIN_FILE)_dlink.o: $(BIN_FILE).fatbin
+	nvcc $(BIN_FILE).fatbin -gencode arch=$(CP),code=$(SM) \
+        -dlink -o $(BIN_FILE)_dlink.o -lcudart -lcudart_static -lcudadevrt
+
+# Link both object files together (either nvcc or clang works here):
+$(BIN_FILE): $(BIN_FILE).o $(BIN_FILE)_dlink.o
+	nvcc $(BIN_FILE).o $(BIN_FILE)_dlink.o -o $(BIN_FILE) -arch=$(SM) -L/usr/lib/llvm-14/lib -lc++
+
+
+clean:
+	rm -f *.o *.bc *.fatbin *.ptx *.cubin *.ll final_executable $(EXE) $(BIN_FILE)
+
+
+### OLD ATTEMPTS IGNORE #### ========================================
+old: $(HOST_SO) device_fatbin.cu opt_host.bc
 
 	$(CLANGPP) -c device_fatbin.cu -o device_fatbin.o \
     --cuda-path=/usr/local/cuda \
@@ -44,53 +108,6 @@ all: $(HOST_SO) device_fatbin.cu opt_host.bc
     -L/usr/local/cuda/lib64 -lcudart \
     -Wl,-rpath,. -Wl,-rpath,/usr/local/cuda/lib64\
 	$(CFLAGS)
-
-# for only host code only used during dev
-# $(CLANGPP) opt_host.bc -L. -lprint -o final_exec \
-# -Wl,-rpath,. \
-# -lcudart -L/usr/local/cuda/lib64\
-# $(CFLAGS)
-
-
-BIN_FILE=add_vector
-SRC_FILE=$(BIN_FILE).cu
-
-main: $(BIN_FILE)
-
-# Host Side
-$(BIN_FILE).ll: $(SRC_FILE) $(BIN_FILE).fatbin
-	$(CLANGPP) -stdlib=libc++ -Wall -Werror $(BIN_FILE).cu -march=x86-64 --cuda-host-only -relocatable-pch \
-        -Xclang -fcuda-include-gpubinary -Xclang $(BIN_FILE).fatbin -S -g -c -emit-llvm\
-		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
-
-$(BIN_FILE).o: $(BIN_FILE).ll
-	$(LLC) -march=x86-64 $(BIN_FILE).ll -o $(BIN_FILE).s
-	$(CLANGPP) -c -Wall $(BIN_FILE).s -o $(BIN_FILE).o
-
-# GPU Side
-$(BIN_FILE)-cuda-nvptx64-nvidia-cuda-sm_75.ll: $(SRC_FILE)
-	$(CLANGPP) -x cuda -stdlib=libc++ -Wall -Werror $(BIN_FILE).cu --cuda-device-only \
-        --cuda-gpu-arch=sm_75 -S -g -emit-llvm\
-		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
-
-$(BIN_FILE).ptx: $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-sm_75.ll
-	$(LLC) -march=nvptx64 -mcpu=sm_75 -mattr=+ptx75 $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-sm_75.ll -o $(BIN_FILE).ptx
-
-$(BIN_FILE).ptx.o: $(BIN_FILE).ptx
-	ptxas -m64 --gpu-name=sm_75 $(BIN_FILE).ptx -o $(BIN_FILE).ptx.o
-
-$(BIN_FILE).fatbin: $(BIN_FILE).ptx.o
-	fatbinary --64 --create $(BIN_FILE).fatbin --image=profile=sm_75,file=$(BIN_FILE).ptx.o \
-        --image=profile=compute_75,file=$(BIN_FILE).ptx -link
-
-$(BIN_FILE)_dlink.o: $(BIN_FILE).fatbin
-	nvcc $(BIN_FILE).fatbin -gencode arch=compute_75,code=sm_75 \
-        -dlink -o $(BIN_FILE)_dlink.o -lcudart -lcudart_static -lcudadevrt
-
-# Link both object files together (either nvcc or clang works here):
-$(BIN_FILE): $(BIN_FILE).o $(BIN_FILE)_dlink.o
-	nvcc $(BIN_FILE).o $(BIN_FILE)_dlink.o -o $(BIN_FILE) -arch=sm_75 -L/usr/lib/llvm-14/lib -lc++
-
 
 
 host.bc: $(SRC)
@@ -157,8 +174,6 @@ dis: host.bc device.bc device.link.bc # only used for debugging
 	$(LLVM_DIS) device.bc -o device.ll
 	$(LLVM_DIS) device.link.bc -o device.link.ll
 
-clean:
-	rm -f *.o *.bc *.fatbin *.ptx *.cubin *.ll final_executable $(EXE)
 
 
 ## old code ignore
@@ -184,4 +199,5 @@ alternate: ansf.bc $(HOST_SO)
 	$(CLANGPP) host.o -L. -lprint -Wl,-rpath,. -lcudart -L/usr/local/cuda/lib64  $(CFLAGS) -o $(EXE) 
 	$(CLANGPP) host.o fatbin_wrapper.o fatbin.o -lcudart -L/usr/local/cuda/lib64 -o $(EXE) $(CFLAGS)
 	echo "command 10 done"
+### OLD ATTEMPTS IGNORE #### ========================================
 

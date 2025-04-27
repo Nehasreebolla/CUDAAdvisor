@@ -3,17 +3,8 @@
 #include <iostream>
 #include <stdio.h>
 #include <cuda_runtime.h>
+#include "my.cu"
 
-// Hello world device function
-__device__ void print(){
-
-    printf("Hello world from device function!!\n");
-}
-
-__host__ void print(){
-
-    printf("Hello World from host function!!\n");
-}
 
 #define CHECK_CUDA_ERROR(call)                                           \
     do {                                                                 \

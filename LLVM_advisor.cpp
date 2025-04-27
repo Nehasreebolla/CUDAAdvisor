@@ -77,13 +77,45 @@ namespace{
 
 			for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F)
             {
-				for(Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
-				{
-					BasicBlock::iterator BI = BB->begin();
-					IRBuilder<> builder(&(*BI));
-					builder.SetInsertPoint(&*BI);
-					builder.CreateCall(hook1, {});
+
+				errs() << F->getName().str() << "\n";
+
+				if ("addVectors" == F->getName().str() || F->getName().str().find("axpy_kernel1") != std::string::npos || F->getName().str().find("main") != std::string::npos){
+
+					errs() << "Instrumenting Function " << F->getName().str() << "\n";
+
+					for(Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
+					{
+						BasicBlock::iterator BI = BB->begin();
+						IRBuilder<> builder(&(*BI));
+						builder.SetInsertPoint(&*BI);
+
+						DebugLoc dbg;
+						if (BI->getDebugLoc())
+    						dbg = BI->getDebugLoc();  // If the first instruction has debug info
+						else {
+							// Optional: Search forward for next instruction with debug info
+							BasicBlock::iterator It = BI;
+							++It;
+							for (; It != BB->end(); ++It) {
+								if (It->getDebugLoc()) {
+									dbg = It->getDebugLoc();
+									break;
+								}
+							}
+						}
+
+						// Now set the debug location before creating the call
+						if (dbg)
+							builder.SetCurrentDebugLocation(dbg);
+
+						builder.CreateCall(hook1, {});
+						
+						break;
+					}
+
 				}
+				
             }
 
 			return true;
@@ -3030,7 +3062,7 @@ namespace{
 
 
 char my_rand::ID = 0;
-static RegisterPass<my_rand> Y("my-rand", "instrument at beginning of every function hello world!!", false, false);
+static RegisterPass<my_rand> Y("my-rand", "instrument at beginning of some functions hello world!!", false, false);
 
 char instru_host::ID = 0;
 static RegisterPass<instru_host> X("instru-host", "load/store and call path instrumentation", false, false);

@@ -44,7 +44,7 @@ $(DEVICE_LL): $(SRC)
 # 2. Run custom IR pass
 $(DEVICE_INSTR_LL): $(DEVICE_LL)
 # cp $(DEVICE_LL) $@
-	$(OPT) -enable-new-pm=0  -load $(PASS_SO) -$(PASS_NAME) \
+	$(OPT) -enable-new-pm=0  -S -load $(PASS_SO) -$(PASS_NAME) \
 		$< -o $@
 
 # 3. Convert instrumented IR to PTX
@@ -67,11 +67,12 @@ $(DEVICE_OBJ): $(DEVICE_PTX)
 $(FATBIN_OBJ): $(DEVICE_OBJ)
 	$(FATBIN) -64 \
 	  --create $@ \
-	  --image=profile=$(CUDA_ARCH),file=$(DEVICE_OBJ)
+	  --image=profile=$(CUDA_ARCH),file=$(DEVICE_PTX)
 
 # 6. Compile host code to object
 $(HOST_OBJ): $(SRC)
 	$(CLANG) -c \
+		-fPIC \
 	  -I$(CUDA_PATH)/include \
 	  -isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include\
 	  $< -o $@
