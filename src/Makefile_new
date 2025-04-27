@@ -1,0 +1,91 @@
+# Makefile for CUDA IR instrumentation pipeline
+
+include ../env.mk
+include testtask.mk
+
+LLVM_DIR := $(LLVM)/build
+
+# Change these variables as needed
+CUDA_PATH ?= /usr/local/cuda
+CUDA_ARCH ?= sm_75
+NVPTX_TRIPLE = nvptx64-nvidia-cuda
+PASS_SO ?= $(LLVM_DIR)/lib/LLVMCudaAdvisor.so
+PASS_NAME ?= -my-rand
+
+# Tools
+CLANG = clang++
+OPT = opt
+LLC = llc
+PTXAS = $(CUDA_PATH)/bin/ptxas
+FATBIN = $(CUDA_PATH)/bin/fatbinary
+
+# File names
+SRC = $(EXE).cu
+HOST_OBJ = $(EXE)-host.o
+DEVICE_LL = $(EXE)-device.ll
+DEVICE_INSTR_LL = $(EXE)-instrumented.ll
+DEVICE_PTX = $(EXE).ptx
+DEVICE_OBJ = $(EXE).o
+FATBIN_OBJ = $(EXE)-fatbin.o
+EXE = add_vector
+
+.PHONY: all clean
+all: $(EXE)
+
+# 1. Compile device code to LLVM IR
+$(DEVICE_LL): $(SRC)
+	$(CLANG) -x cuda --cuda-device-only -emit-llvm -S \
+	  --cuda-gpu-arch=$(CUDA_ARCH) \
+	  -I$(CUDA_PATH)/include \
+	  -include __clang_cuda_runtime_wrapper.h \
+	  -isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include\
+	  $< -o $@
+
+# 2. Run custom IR pass
+$(DEVICE_INSTR_LL): $(DEVICE_LL)
+# cp $(DEVICE_LL) $@
+	$(OPT) -enable-new-pm=0  -load $(PASS_SO) -$(PASS_NAME) \
+		$< -o $@
+
+# 3. Convert instrumented IR to PTX
+$(DEVICE_PTX): $(DEVICE_INSTR_LL)
+	$(LLC) -march=nvptx64 -mcpu=sm_75 \
+  	add_vector-instrumented.ll -o add_vector.ptx
+# $(CLANG) -x ir -S \
+# 	-triple=$(NVPTX_TRIPLE) \
+# 	--cuda-gpu-arch=$(CUDA_ARCH) \
+# 	-nocudalib \
+# 	$< -o $@
+
+
+# 4. Assemble PTX to object
+$(DEVICE_OBJ): $(DEVICE_PTX)
+	$(PTXAS) -m64 --gpu-name=$(CUDA_ARCH) \
+	  --output-file=$@ $<
+
+# 5. Create fatbinary for device
+$(FATBIN_OBJ): $(DEVICE_OBJ)
+	$(FATBIN) -64 \
+	  --create $@ \
+	  --image=profile=$(CUDA_ARCH),file=$(DEVICE_OBJ)
+
+# 6. Compile host code to object
+$(HOST_OBJ): $(SRC)
+	$(CLANG) -c \
+	  -I$(CUDA_PATH)/include \
+	  -isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include\
+	  $< -o $@
+
+# 7. Link host and device into final executable
+$(EXE): $(HOST_OBJ) $(FATBIN_OBJ)
+	clang++ $(HOST_OBJ) -L$(CUDA_PATH)/lib64 -lcudart -L/usr/lib/gcc/x86_64-linux-gnu/10 -o $@
+# $(CLANG) $^ \
+#   -L$(CUDA_PATH)/lib64 -lcudart \
+#   -v\
+#   -L/usr/lib/gcc/x86_64-linux-gnu/10\
+#   -o $@
+
+# Clean up
+clean:
+	rm -f $(HOST_OBJ) $(DEVICE_LL) $(DEVICE_INSTR_LL) \
+	       $(DEVICE_PTX) $(DEVICE_OBJ) $(FATBIN_OBJ) $(EXE)

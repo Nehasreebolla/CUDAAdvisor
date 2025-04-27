@@ -60,6 +60,37 @@ int KNcnt=0;
 using namespace llvm;
 namespace{
 
+	struct my_rand : public ModulePass {
+        static char ID;  
+		FunctionCallee hook1;
+        my_rand() : ModulePass(ID) {}
+        virtual bool runOnModule(Module &M){
+			
+			LLVMContext &C = M.getContext();
+			errs() << "\n================== Hello World Pass ==============\n\n";
+			
+			Type* VoidTy = Type::getVoidTy(C); 
+			std::vector<Type*> ArgTypes1 = {};
+			FunctionType *FuncType1 = FunctionType::get(VoidTy, ArgTypes1, false);
+            hook1 = M.getOrInsertFunction("print", FuncType1);
+
+
+			for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F)
+            {
+				for(Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
+				{
+					BasicBlock::iterator BI = BB->begin();
+					IRBuilder<> builder(&(*BI));
+					builder.SetInsertPoint(&*BI);
+					builder.CreateCall(hook1, {});
+				}
+            }
+
+			return true;
+		}
+
+	};
+
 	// mandatory pass  for printing stuff maintains call stack?
 	// pass: host pass
 	// pass: first pass
@@ -2997,6 +3028,9 @@ namespace{
 	// }; //end of pass
 }
 
+
+char my_rand::ID = 0;
+static RegisterPass<my_rand> Y("my-rand", "instrument at beginning of every function hello world!!", false, false);
 
 char instru_host::ID = 0;
 static RegisterPass<instru_host> X("instru-host", "load/store and call path instrumentation", false, false);
