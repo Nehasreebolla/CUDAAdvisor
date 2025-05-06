@@ -1,33 +1,25 @@
 all: sbsi
 
-LLVM_DIR := /home/nitya/llvm-project/build
-CLANG := $(LLVM_DIR)/bin/clang
-CLANGPP := $(LLVM_DIR)/bin/clang++
-OPTCC := $(LLVM_DIR)/bin/opt
-LLC := $(LLVM_DIR)/bin/llc
-LLVM_AS := $(LLVM_DIR)/bin/llvm-as
-LLVM_DIS := $(LLVM_DIR)/bin/llvm-dis
-LLVM_LINK := $(LLVM_DIR)/bin/llvm-link
-
 DEBUG = -g 
 OPTAPP = -O0
-OPT = -O2 -std=c++11
+OPT = -O2 -std=c++14
 GC = g++ -std=c++11 #for unordered_map
+
 include ../env.mk
 include testtask.mk
 
 SRC = axpy.cu
-EXE =axpy
-CFLAGS = --gcc-toolchain=/usr   -L/usr/local/cuda/lib64   -L/usr/lib/gcc/x86_64-linux-gnu/10   -lcudart -lstdc++   -isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include
+EXE = axpy
+CFLAGS = -isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include # -I/usr/lib/gcc/x86_64-linux-gnu/4.8/include/ -std=c++11
 ANSF =$(UPATH)/ansf.cu
 HOST_SO =libprint.so
 
 #INSTRU = -instru-kernel-basic  -instru-kernel-memory
 #INSTRU = -instru-kernel-sig  -instru-kernel-basic -instru-kernel-call-path  -constmerge  
 #INSTRU = -instru-kernel-sig -instru-kernel-basic -instru-kernel-call-path -instru-kernel-memory -constmerge
-# INSTRU = -instru-kernel-sig -instru-kernel-basic -instru-kernel-call-path $(INSTRU_TASK) -constmerge
+INSTRU = -instru-kernel-sig -instru-kernel-basic -instru-kernel-call-path $(INSTRU_TASK) -constmerge
 #INSTRU = -instru-kernel-sig -instru-kernel-basic -instru-kernel-call-path -instru-kernel-branch -constmerge
-INSTRU=-instru-host
+
 AUXSRC = 
 AUXOBJ =
 
@@ -37,30 +29,30 @@ $(PASS) : $(UPATH)/../LLVM_advisor.cpp $(UPATH)/../common.h
 ll : device.clean.ll ansf.ll device.link.ll device.ll device.ll device.ll host.ll hosttmp.ll hosti.ll
 
 rsm: hosti.bc
-	$(LLVM_AS) < hosti.ll > hosti.bc 
-	$(CLANGPP) hosti.bc -c
-	$(CLANGPP) hosti.o -o axpy -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -pthread -L. -lprint
+	llvm-as < hosti.ll > hosti.bc 
+	clang++ hosti.bc -c
+	clang++ hosti.o -o axpy -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -pthread -L. -lprint
 
 AUXOBJ: $(AUXSRC)
 	gcc -c < $< 
 
 %.ll:  %.bc
-	$(LLVM_DIS) < $< > $@ 
+	llvm-dis < $< > $@ 
 
 native:	$(SRC)
 	nvcc $(DEBUG) $(OPTAPP) $(SRC) -o native -L. -lprint --gpu-architecture=$(SM)
 
 clang: $(SRC)
-	$(CLANGPP) $(DEBUG) -G $(OPTAPP) $(SRC) -o clang --cuda-gpu-arch=$(SM) -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -pthread #-save-temps
+	clang++ $(DEBUG) -G $(OPTAPP) $(SRC) -o clang --cuda-gpu-arch=$(SM) -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -pthread #-save-temps
 
 bc:
-	$(CLANGPP) $(DEBUG) $(OPT) $(SRC) -emit-llvm -c -save-temps
+	clang++ $(DEBUG) $(OPT) $(SRC) -emit-llvm -c -save-temps
 
 device.bc instru: device.link.bc $(PASS) 
-	$(OPTCC) -load $(PASS) $(INSTRU) < device.link.bc > device.bc
+	opt -load $(PASS) $(INSTRU) < device.link.bc > device.bc
 
 clean: 
-	rm -f *.o *.bc *.ll *.s  native_ax* *.cubin *.ptx *.fatbin a.out *.cui *cudafe* *cpp*.i* *fatbin.c *module_id *.reg.c $(EXE) native clang
+	rm -f *.o *.bc *.ll *.s  native_ax* *.cubin *.ptx *.fatbin a.out *.cui *cudafe* *cpp*.i* *fatbin.c *module_id *.reg.c $(EXE) native clang *so
 
 $(HOST_SO) : $(UPATH)/print.cpp  $(UPATH)/../common.h $(UPATH)/types.h $(UPATH)/calc.cpp
 	$(GC) -c $(DEBUG) $(OPT) -Wall -D $(ANA_TASK) -fPIC -lm -fopenmp $(UPATH)/print.cpp -o $(UPATH)/print.o
@@ -70,35 +62,37 @@ wayin:
 	cp device.clean.bc device.bc
 
 sbs: wayin device.fatbin host.bc
-	$(CLANGPP) host.bc -c
-	$(CLANGPP) host.o -o $(EXE) -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -pthread 
+	clang++ host.bc -c
+	clang++ host.o -o $(EXE) -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -pthread 
 
 aux:
 
 sbsi: hosti.o $(HOST_SO) 
-	$(CLANGPP) $(DEBUG) $(AUXOBJ) hosti.o -o $(EXE) -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -lm -pthread -L$(UPATH) -lprint
+	clang++ $(DEBUG) $(AUXOBJ) hosti.o -o $(EXE) -L/usr/local/cuda/lib64 -lcudart -ldl -lrt -lm -pthread -L$(UPATH) -lprint
 	
 hosti.o: hosti.bc
-	$(CLANGPP) hosti.bc -c
+	clang++ hosti.bc -c
 
 hosttmp.bc: host.bc  $(PASS)  
-	$(OPTCC) -load $(PASS) -instru-host-sig < host.bc > hosttmp.bc	
+	opt -load $(PASS) -instru-host-sig < host.bc > hosttmp.bc	
 
 hosti.bc: hosttmp.bc  $(PASS)
-	$(OPTCC) -load $(PASS) -instru-host -instru-host-measure -constmerge < hosttmp.bc > hosti.bc
+	opt -load $(PASS) -instru-host -instru-host-measure -constmerge < hosttmp.bc > hosti.bc
 
 #	opt -load $(PASS) -instru-global-var < hosttmp.bc > hosttmp2.bc	
 #	opt -load $(PASS) -instru-host < hosttmp2.bc > hosti.bc	
 
 host.o : host.bc
-	$(CLANGPP) host.bc -c
+	clang++ host.bc -c
 
 host.bc: device.fatbin host.cui
-	$(CLANG) -cc1 -triple x86_64-unknown-linux-gnu -aux-triple nvptx64-nvidia-cuda -emit-llvm-bc -emit-llvm-uselists -disable-free -main-file-name axpy.cu -mrelocation-model static -mthread-model posix -mdisable-fp-elim -fmath-errno -masm-verbose -mconstructor-aliases -munwind-tables -fuse-init-array -target-cpu x86-64 -v -dwarf-column-info -debug-info-kind=limited -dwarf-version=4 -debugger-tuning=gdb -resource-dir $(LLVM)/../lib/clang/4.0.0 $(OPT) -fdeprecated-macro -ferror-limit 19 -fmessage-length 0 -pthread -fobjc-runtime=gcc -fcxx-exceptions -fexceptions -fdiagnostics-show-option -disable-llvm-passes -o host.bc -x cuda-cpp-output host.cui -fcuda-include-gpubinary device.fatbin
+	clang -cc1 $(CFLAGS) -triple x86_64-unknown-linux-gnu -aux-triple nvptx64-nvidia-cuda -emit-llvm-bc -emit-llvm-uselists -disable-free -main-file-name axpy.cu -mrelocation-model static -mthread-model posix  -fmath-errno  -mconstructor-aliases -target-cpu x86-64 -v  -debug-info-kind=limited -dwarf-version=4 -debugger-tuning=gdb -resource-dir $(LLVM)/../lib/clang/4.0.0 $(OPT) -fdeprecated-macro -ferror-limit 19  -pthread -fobjc-runtime=gcc -fcxx-exceptions -fexceptions -disable-llvm-passes -o host.bc -x cuda-cpp-output host.cui -fcuda-include-gpubinary device.fatbin
 #	clang++ -cc1 $(OPT) -triple x86_64-unknown-linux-gnu -aux-triple nvptx64-nvidia-cuda -emit-llvm-bc -emit-llvm-uselists -disable-free -main-file-name $(SRC) -o host.bc -x cuda-cpp-output host.cui -fcuda-include-gpubinary device.fatbin	
 
 device.ptx: device.bc
-	$(LLC) device.bc -filetype=asm -o device.ptx
+	llc device.bc -march=nvptx64 -mcpu=$(SM)  -filetype=asm -o device.ptx
+# sed -i -E 's/\.file[[:space:]]+([0-9]+)[[:space:]]+"([^"]+)"[[:space:]]+"([^"]+)"/.file \1 "\2\/\3"/' $(BIN_FILE).ptx
+
 
 device.o :  device.ptx
 	ptxas --gpu-name $(SM) device.ptx -o device.o -v -maxrregcount=31 #for verbose, resources check
@@ -107,32 +101,17 @@ device.fatbin: device.o host.cui
 	fatbinary --cuda -64 --create device.fatbin --image=profile=$(SM),file=device.o --image=profile=$(CP),file=device.ptx  
 
 host.cui: $(SRC)
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -E --cuda-host-only $(SRC) -o host.cui
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -c --cuda-host-only -emit-llvm $(SRC) -o host.clean.bc
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -c -S --cuda-host-only -emit-llvm $(SRC) -o host.clean.ll
+	clang++ $(DEBUG) $(OPTAPP) $(CFLAGS) -E --cuda-host-only $(SRC) -o host.cui
+	clang++ $(DEBUG) $(OPTAPP) $(CFLAGS) -c --cuda-host-only -emit-llvm $(SRC) -o host.clean.bc
+	clang++ $(DEBUG) $(OPTAPP) $(CFLAGS) -c -S --cuda-host-only -emit-llvm $(SRC) -o host.clean.ll
 
 device.clean.bc:  $(SRC)
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -c --cuda-device-only -emit-llvm $(SRC) -o device.clean.bc
+	clang++ $(DEBUG) $(OPTAPP) $(CFLAGS) -c --cuda-device-only -emit-llvm $(SRC) -o device.clean.bc
 
 ansf.bc :  $(ANSF) $(UPATH)/../common.h  $(UPATH)/types.h
-	$(CLANGPP) $(DEBUG) $(OPT) -c --cuda-device-only -emit-llvm $(ANSF) -o ansf.bc
+	clang++ $(DEBUG) $(CFLAGS) $(OPT) -c --cuda-device-only -emit-llvm $(ANSF) -o ansf.bc
 
 device.link.bc: device.clean.bc ansf.bc 
-	$(LLVM_LINK) device.clean.bc ansf.bc -o=device.link.bc
-
-
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -E --cuda-host-only $(SRC) -o host.cui
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -c --cuda-host-only -emit-llvm $(SRC) -o host.clean.bc
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -c -S --cuda-host-only -emit-llvm $(SRC) -o host.clean.ll
-
-device.clean.bc:  $(SRC)
-	$(CLANGPP) $(DEBUG) $(OPTAPP) $(CFLAGS) -c --cuda-device-only -emit-llvm $(SRC) -o device.clean.bc
-
-ansf.bc :  $(ANSF) $(UPATH)/../common.h  $(UPATH)/types.h
-	$(CLANGPP) $(DEBUG) $(OPT) -c --cuda-device-only -emit-llvm $(ANSF) -o ansf.bc $(CFLAGS)
-
-device.link.bc: device.clean.bc ansf.bc 
-	$(LLVM_LINK) device.clean.bc ansf.bc -o=device.link.bc
-
+	llvm-link device.clean.bc ansf.bc -o=device.link.bc
 
 

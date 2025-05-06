@@ -15,9 +15,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include <iostream>
-#include "llvm/Support/CommandLine.h"
 #include <string>
 #include <sstream>
+#include "llvm/Support/CommandLine.h"
 
 
 #include "common.h"
@@ -55,9 +55,15 @@ std::string AF[AFsize] = {	"print1",
 std::string CUDAKN[30];
 int KNcnt=0;
 
-
-
 using namespace llvm;
+
+static cl::opt<std::string> FunctionName(
+    "fname", cl::desc("Function name to instrument"), cl::value_desc("function"));
+
+static cl::opt<std::string> LineRange(
+    "line-range", cl::desc("Line number range (e.g., 6-8)"), cl::value_desc("line-range"));
+
+
 namespace{
 
 	struct my_rand : public ModulePass {
@@ -122,6 +128,97 @@ namespace{
 		}
 
 	};
+
+	struct our_pass : public ModulePass {
+        static char ID;  
+		FunctionCallee hook1;
+        our_pass() : ModulePass(ID) {}
+        virtual bool runOnModule(Module &M){
+
+
+
+			int lineStart = -1, lineEnd = -1;
+
+			if (!LineRange.empty()) {
+				size_t dashPos = LineRange.find('-');
+				if (dashPos != std::string::npos) {
+					lineStart = std::stoi(LineRange.substr(0, dashPos));
+					lineEnd = std::stoi(LineRange.substr(dashPos + 1));
+				} else {
+					errs() << "Invalid line-range format. Expected format: start-end\n";
+					return false;
+				}
+			}
+
+			std::cout << "Line range: " << lineStart << " to " << lineEnd << std::endl;
+
+			
+			LLVMContext &C = M.getContext();
+			errs() << "\n================== Our Pass ==============\n\n";
+			
+			Type* VoidTy = Type::getVoidTy(C); 
+			std::vector<Type*> ArgTypes1 = {};
+			FunctionType *FuncType1 = FunctionType::get(VoidTy, ArgTypes1, false);
+            hook1 = M.getOrInsertFunction("print", FuncType1);
+
+
+			for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F)
+            {
+
+				errs() << F->getName().str() << "\n";
+
+				if (F->getName().str().find(FunctionName) != std::string::npos){
+
+					errs() << "Instrumenting Function " << F->getName().str() << "\n";
+
+					for(Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
+					{
+						BasicBlock::iterator BI = BB->begin();
+						IRBuilder<> builder(&(*BI));
+						builder.SetInsertPoint(&*BI);
+
+						DebugLoc dbg;
+						if (BI->getDebugLoc()){
+    						dbg = BI->getDebugLoc();  // If the first instruction has debug info
+							unsigned line = dbg.getLine();
+							unsigned col = dbg.getCol();  // or dbg.getColumn(), depending on LLVM version
+							errs() << "Line: " << line << ", Column: " << col << "\n";
+						}
+						else {
+							// Optional: Search forward for next instruction with debug info
+							BasicBlock::iterator It = BI;
+							++It;
+							for (; It != BB->end(); ++It) {
+								if (It->getDebugLoc()) {
+									dbg = It->getDebugLoc();
+									break;
+								}
+							}
+						}
+
+						// Now set the debug location before creating the call
+						if (dbg)
+							builder.SetCurrentDebugLocation(dbg);
+
+						// TODO: insert according to line range
+
+						builder.CreateCall(hook1, {});
+						
+						break;
+					}
+
+				}
+				else if (F->getName().str().find("main") != std::string::npos){
+
+					// For printing memory bandwidth result
+				}
+            }
+
+			return true;
+		}
+
+	};
+
 
 	// mandatory pass  for printing stuff maintains call stack?
 	// pass: host pass
@@ -1148,6 +1245,7 @@ namespace{
 			for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F)
 				for(Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
 									instru_kernel_callpath::runOnBasicBlock51(BB, listF);
+									std::cout << "yo\n";
 
 			errs() << "print out list F, length= "<< listF.size() << "\n";
 			for(auto &f: listF)
@@ -1257,6 +1355,8 @@ namespace{
 					}
 				}
 			}
+
+			return true;
 
 		}
 
@@ -2408,8 +2508,16 @@ namespace{
 					errs() << "\n";
 					Function* hookCudaArg = BI->getModule()->getFunction("cudaSetupArgument");
 					//hookCudaArg ->dump();
+					if (!hookCudaArg) {
+						llvm::errs() << "Error: cudaSetupArgument function not found in module.\n";
+						return false; // or handle error appropriately
+					}
+
+					std::cout << "Before call\n";
 					builder.CreateCall( hookCudaArg, {ptrhead /*generated in entry block*/ , builder.getInt64(8), builder.getInt64(myOffset) }  );
-				//	builder.CreateCall( hookCudaArg, {b_stack /*generated in entry block*/ , builder.getInt64(8), builder.getInt64(16+offset) }  );
+					std::cout << "After call\n";
+
+					//	builder.CreateCall( hookCudaArg, {b_stack /*generated in entry block*/ , builder.getInt64(8), builder.getInt64(16+offset) }  );
 				//	builder.CreateCall( hookCudaArg, {b_stackHeight /*generated in entry block*/ , builder.getInt64(8), builder.getInt64(24+offset) }  );
 
 					/// 
@@ -3217,6 +3325,11 @@ namespace{
 
 char my_rand::ID = 0;
 static RegisterPass<my_rand> Y("my-rand", "instrument at beginning of some functions hello world!!", false, false);
+
+
+char our_pass::ID = 0;
+static RegisterPass<our_pass> Z("our-pass", "Line Range Instrumentation", false, false);
+
 
 char instru_host::ID = 0;
 static RegisterPass<instru_host> X("instru-host", "load/store and call path instrumentation", false, false);
