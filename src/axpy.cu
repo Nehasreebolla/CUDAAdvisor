@@ -6,6 +6,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "my.cu"
+#include "bandwidth_helpers.h"
 
 //extern __device__ int testxyz[1000];
 //int localtrace[10000];
