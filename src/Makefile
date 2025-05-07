@@ -35,13 +35,13 @@ OPT = -O2 -std=c++11
 GC = g++ -std=c++11 # for unordered_map
 
 ## Used in make all
-PASS_NAME ?= -our-pass
 PASS_SO ?= $(LLVM_DIR)/lib/LLVMCudaAdvisor.so
 BIN_FILE=add_vector
 SRC_FILE=$(BIN_FILE).cu
 
 INSTRU = -instru-kernel-sig -instru-kernel-basic -instru-kernel-call-path $(INSTRU_TASK) -constmerge
 
+PASS_NAME ?= -our-pass
 all: $(BIN_FILE)
 
 # Host Side
@@ -50,8 +50,8 @@ $(BIN_FILE).bc: $(SRC_FILE) $(BIN_FILE).fatbin
         -Xclang -fcuda-include-gpubinary -Xclang $(BIN_FILE).fatbin  -g -c -emit-llvm\
 		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include\
 		-fPIC
-	$(OPTCC) -enable-new-pm=0  -S -load $(PASS_SO) $(PASS_NAME) \
-	-fname=addVectors -line-range=20-21\
+	$(OPTCC) -enable-new-pm=0 -load $(PASS_SO) $(PASS_NAME) \
+	-fname=addVectors -line-range=21-22\
  	$(BIN_FILE).bc -o $(BIN_FILE).bc
 # Instrument host side code
 # $(OPTCC) -enable-new-pm=0  -S -load $(PASS_SO) -instru-host-sig \
@@ -76,7 +76,7 @@ $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).bc: $(SRC_FILE) ansf.bc
 
 # Instrument GPU side code
 	$(OPTCC) -enable-new-pm=0 -load $(PASS_SO) $(PASS_NAME) \
-		-fname=addVectors -line-range=20-21\
+		-fname=addVectors -line-range=21-22\
 		$(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).bc -o $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).bc
 
 

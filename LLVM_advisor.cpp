@@ -17,7 +17,16 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <vector>
+#include <unordered_set>
+#include <unordered_map>
+#include <queue>
 #include "llvm/Support/CommandLine.h"
+#include "llvm/IR/DebugInfoMetadata.h"
+#include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/Function.h>
+#include <climits>
+#include <llvm/IR/InstIterator.h>
 
 
 #include "common.h"
@@ -133,6 +142,163 @@ namespace{
         static char ID;  
 		FunctionCallee hook1;
         our_pass() : ModulePass(ID) {}
+
+		bool overlap(int start, int end, int lineStart, int lineEnd){
+
+			if (start > end || lineStart > lineEnd)
+				return false; // Invalid range
+
+			if (start > lineEnd || end < lineStart) {
+				return false; // No overlap
+			}
+
+			return true; // Overlap exists
+		}
+
+		void findInstructionsToInstrument(Function *F, std::vector<Instruction*> &instructionsToInstrument, int lineStart, int lineEnd) {
+
+			std::unordered_map<Instruction*, int> LineStart; // Min line number (predecessor)
+			std::unordered_map<Instruction*, int> LineEnd;   // Max line number (successor)
+			std::unordered_set<Instruction*> InWorklist;     // Fast O(1) check for presence
+			std::queue<Instruction*> Worklist;               // FIFO queue for processing
+
+
+			// For getting LineStart
+
+			for (Instruction &I : instructions(*F)) {
+				if (DILocation *Loc = I.getDebugLoc()) {
+					LineStart[&I] = Loc->getLine();
+				} else {
+					LineStart[&I] = INT_MAX;
+					Worklist.push(&I);
+					InWorklist.insert(&I);
+				}
+			}
+
+			while (!Worklist.empty()) {
+				Instruction *I = Worklist.front();
+				Worklist.pop();
+				InWorklist.erase(I);
+			
+				int oldMin = LineStart[I];
+				int newMin = oldMin;
+			
+				// If not the first instruction, take the previous instruction's line
+				if (Instruction *Prev = I->getPrevNode()) {
+					newMin = std::min(newMin, LineStart[Prev]);
+				} else {
+					// First instruction in the block: check predecessors' terminators
+					for (BasicBlock *Pred : predecessors(I->getParent())) {
+						Instruction *Term = Pred->getTerminator();
+						newMin = std::min(newMin, LineStart[Term]);
+					}
+				}
+			
+				// If the minimum line changed, propagate to successors
+				if (newMin < oldMin) {
+					LineStart[I] = newMin;
+			
+					// Successors:
+					if (Instruction *Next = I->getNextNode()) {
+						if (InWorklist.insert(Next).second) {
+							Worklist.push(Next);
+						}
+					} else {
+						// If it's the last in the block, push the first of each successor
+						for (BasicBlock *Succ : successors(I->getParent())) {
+							Instruction *First = &Succ->front();
+							if (InWorklist.insert(First).second) {
+								Worklist.push(First);
+							}
+						}
+					}
+				}
+			}
+			
+
+			// For getting LineEnd
+
+			for (Instruction &I : instructions(*F)) {
+				if (DILocation *Loc = I.getDebugLoc()) {
+					LineEnd[&I] = Loc->getLine();
+				} else {
+					LineEnd[&I] = -1;
+					Worklist.push(&I);
+					InWorklist.insert(&I);
+				}
+			}
+
+			while (!Worklist.empty()) {
+				Instruction *I = Worklist.front();
+				Worklist.pop();
+				InWorklist.erase(I);
+			
+				int oldMax = LineEnd[I];
+				int newMax = oldMax;
+			
+				// If not the last instruction, take the next instruction's line
+				if (Instruction *Next = I->getNextNode()) {
+					newMax = std::max(newMax, LineEnd[Next]);
+				} else {
+					// Last instruction in the block: check successors' first instructions
+					for (BasicBlock *Succ : successors(I->getParent())) {
+						Instruction *First = &Succ->front();
+						newMax = std::max(newMax, LineEnd[First]);
+					}
+				}
+			
+				// If the maximum line changed, propagate to predecessors
+				if (newMax > oldMax) {
+					LineEnd[I] = newMax;
+			
+					// Predecessors:
+					if (Instruction *Prev = I->getPrevNode()) {
+						if (InWorklist.insert(Prev).second) {
+							Worklist.push(Prev);
+						}
+					} else {
+						// If it's the first in the block, push all predecessors' terminators
+						for (BasicBlock *Pred : predecessors(I->getParent())) {
+							Instruction *Term = Pred->getTerminator();
+							if (InWorklist.insert(Term).second) {
+								Worklist.push(Term);
+							}
+						}
+					}
+				}
+			}
+			
+			
+			for (Instruction &I : instructions(*F)) {
+				if (!I.getDebugLoc()) {
+					int start = LineStart[&I];
+					int end = LineEnd[&I];
+					if (start != INT_MAX && end != -1) {
+						outs() << "Instruction: " << I << " → Line Range: [" << start << ", " << end << "]\n";
+
+						if (overlap(start, end, lineStart, lineEnd)) {
+							instructionsToInstrument.push_back(&I);
+							outs() << "Instruction to instrument: " << I << "\n";
+						}
+
+					}
+				}
+				else {
+					DILocation *Loc = I.getDebugLoc();
+					int lineNumber = Loc->getLine();
+
+					if (lineNumber >= lineStart && lineNumber <= lineEnd) {
+						instructionsToInstrument.push_back(&I);
+						outs() << "Instruction to instrument: " << I << "\n";
+					}
+					
+				}
+			}
+			
+
+			return;
+		}
+
         virtual bool runOnModule(Module &M){
 
 
@@ -161,6 +327,8 @@ namespace{
 			FunctionType *FuncType1 = FunctionType::get(VoidTy, ArgTypes1, false);
             hook1 = M.getOrInsertFunction("print", FuncType1);
 
+			std::vector<Instruction*> instructionsToInstrument;
+
 
 			for(Module::iterator F = M.begin(), E = M.end(); F!= E; ++F)
             {
@@ -171,41 +339,8 @@ namespace{
 
 					errs() << "Instrumenting Function " << F->getName().str() << "\n";
 
-					for(Function::iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
-					{
-						BasicBlock::iterator BI = BB->begin();
-						IRBuilder<> builder(&(*BI));
-						builder.SetInsertPoint(&*BI);
-
-						DebugLoc dbg;
-						if (BI->getDebugLoc()){
-    						dbg = BI->getDebugLoc();  // If the first instruction has debug info
-							unsigned line = dbg.getLine();
-							unsigned col = dbg.getCol();  // or dbg.getColumn(), depending on LLVM version
-							errs() << "Line: " << line << ", Column: " << col << "\n";
-						}
-						else {
-							// Optional: Search forward for next instruction with debug info
-							BasicBlock::iterator It = BI;
-							++It;
-							for (; It != BB->end(); ++It) {
-								if (It->getDebugLoc()) {
-									dbg = It->getDebugLoc();
-									break;
-								}
-							}
-						}
-
-						// Now set the debug location before creating the call
-						if (dbg)
-							builder.SetCurrentDebugLocation(dbg);
-
-						// TODO: insert according to line range
-
-						builder.CreateCall(hook1, {});
-						
-						break;
-					}
+					findInstructionsToInstrument(&(*F), instructionsToInstrument, lineStart, lineEnd);
+					
 
 				}
 				else if (F->getName().str().find("main") != std::string::npos){
@@ -218,6 +353,57 @@ namespace{
 		}
 
 	};
+
+	//pass : To detect load/store instructions
+
+	struct DetectLoadStorePass : public FunctionPass {
+		static char ID; // Pass identification, replacement for typeid
+		DetectLoadStorePass() : FunctionPass(ID) {}
+	
+		bool runOnFunction(Function &F) override {
+		  errs() << "Function: " << F.getName() << "\n";
+	
+		  for (BasicBlock &BB : F) {
+			for (Instruction &I : BB) {
+			  // Check if the instruction is a LoadInst
+			  if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
+				Value *Addr = LI->getPointerOperand();
+				unsigned Line = getLineNumber(&I);
+				errs() << "Load: " << *LI << " | Address: " << *Addr;
+				if (Line != -1) {
+				  errs() << " | Line: " << Line;
+				} else {
+				  errs() << " | Line: <unknown>";
+				}
+				errs() << "\n";
+			  }
+			  // Check if the instruction is a StoreInst
+			  else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
+				Value *Addr = SI->getPointerOperand();
+				unsigned Line = getLineNumber(&I);
+				errs() << "Store: " << *SI << " | Address: " << *Addr;
+				if (Line != -1) {
+				  errs() << " | Line: " << Line;
+				} else {
+				  errs() << " | Line: <unknown>";
+				}
+				errs() << "\n";
+			  }
+			}
+		  }
+		  return false; // Pass does not modify the IR
+		}
+	
+		// Helper function to extract line number from debug metadata
+		unsigned getLineNumber(Instruction *I) {
+		  if (MDNode *DebugNode = I->getMetadata("dbg")) {
+			if (DILocation *Loc = dyn_cast<DILocation>(DebugNode)) {
+			  return Loc->getLine();
+			}
+		  }
+		  return -1; // Return 0 if no debug info is available
+		}
+	  };
 
 
 	// mandatory pass  for printing stuff maintains call stack?
@@ -3320,8 +3506,13 @@ namespace{
 
 
 	}; //end of pass
+
+	
+	
 }
 
+char DetectLoadStorePass::ID = 0;
+static RegisterPass<DetectLoadStorePass> A("DetectLoadStorePass", "instrument at !!", false, false);
 
 char my_rand::ID = 0;
 static RegisterPass<my_rand> Y("my-rand", "instrument at beginning of some functions hello world!!", false, false);
