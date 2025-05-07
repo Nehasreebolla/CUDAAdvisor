@@ -155,7 +155,7 @@ namespace{
 			return true; // Overlap exists
 		}
 
-		void findInstructionsToInstrument(Function *F, std::vector<Instruction*> &instructionsToInstrument, int lineStart, int lineEnd) {
+		void findInstructionsToInstrument(Function *F, std::vector<Instruction*> &instructionsToInstrument, int lineStart, int lineEnd) {	
 
 			std::unordered_map<Instruction*, int> LineStart; // Min line number (predecessor)
 			std::unordered_map<Instruction*, int> LineEnd;   // Max line number (successor)
@@ -274,6 +274,7 @@ namespace{
 					int start = LineStart[&I];
 					int end = LineEnd[&I];
 					if (start != INT_MAX && end != -1) {
+
 						outs() << "Instruction: " << I << " → Line Range: [" << start << ", " << end << "]\n";
 
 						if (overlap(start, end, lineStart, lineEnd)) {
@@ -281,6 +282,9 @@ namespace{
 							outs() << "Instruction to instrument: " << I << "\n";
 						}
 
+					}
+					else {
+						outs() << "Instruction Range Not found: " << I << " → Line Range: [" << start << ", " << end << "]\n";
 					}
 				}
 				else {
