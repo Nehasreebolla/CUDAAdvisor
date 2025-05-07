@@ -42,6 +42,10 @@ SRC_FILE=$(BIN_FILE).cu
 INSTRU = -instru-kernel-sig -instru-kernel-basic -instru-kernel-call-path $(INSTRU_TASK) -constmerge
 
 PASS_NAME ?= -our-pass
+LINE_RANGE_DEVICE ?= -line-range=33-34
+LINE_RANGE_HOST ?= -line-range=25-30
+FNAME ?= -fname=addVectors # Function name to instrument
+
 all: $(BIN_FILE)
 
 # Host Side
@@ -50,9 +54,9 @@ $(BIN_FILE).bc: $(SRC_FILE) $(BIN_FILE).fatbin
         -Xclang -fcuda-include-gpubinary -Xclang $(BIN_FILE).fatbin  -g -c -emit-llvm\
 		-isystem /usr/include/c++/10   -isystem /usr/include/x86_64-linux-gnu/c++/10   -isystem /usr/include/c++/10/backward   -isystem /usr/lib/gcc/x86_64-linux-gnu/10/include\
 		-fPIC
-	$(OPTCC) -enable-new-pm=0 -load $(PASS_SO) $(PASS_NAME) \
-	-fname=addVectors -line-range=21-22\
- 	$(BIN_FILE).bc -o $(BIN_FILE).bc
+# $(OPTCC) -enable-new-pm=0 -load $(PASS_SO) $(PASS_NAME) \
+# -fname=addVectors -line-range=21-22\
+# $(BIN_FILE).bc -o $(BIN_FILE).bc
 # Instrument host side code
 # $(OPTCC) -enable-new-pm=0  -S -load $(PASS_SO) -instru-host-sig \
 # 	$(BIN_FILE).bc -o $(BIN_FILE).bc
@@ -76,7 +80,7 @@ $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).bc: $(SRC_FILE) ansf.bc
 
 # Instrument GPU side code
 	$(OPTCC) -enable-new-pm=0 -load $(PASS_SO) $(PASS_NAME) \
-		-fname=addVectors -line-range=21-22\
+		$(FNAME) $(LINE_RANGE_DEVICE)\
 		$(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).bc -o $(BIN_FILE)-cuda-nvptx64-nvidia-cuda-$(SM).bc
 
 

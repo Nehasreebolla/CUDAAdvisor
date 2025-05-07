@@ -18,12 +18,29 @@
 
 extern "C" __global__ void addVectors(float *a, float *b, float *c, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n)
+    
+    if (i < n){
         c[i] = a[i] + b[i];
+    
+        if (c[i] > 10){
+            a[i] = 10;
+        }
+        else {
+            a[i] = 11;
+        }
+
+        for (int j = 0; j < 10; ++j) {
+            a[i] += 1;
+            c[i] = c[i]*c[i];
+        }
+
+        b[i] = 2;
+    }
+    
 }
 
 int main() {
-    int n = 1 << 20; // 1M elements
+    int n = 10; // 1M elements
     size_t size = n * sizeof(float);
 
     // Allocate host memory
