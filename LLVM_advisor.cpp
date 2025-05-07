@@ -27,6 +27,7 @@
 #include <llvm/IR/Function.h>
 #include <climits>
 #include <llvm/IR/InstIterator.h>
+#include "llvm/IR/DebugInfo.h"
 
 
 #include "common.h"
@@ -3519,11 +3520,14 @@ struct MemoryBandwidthPass : public FunctionPass {
 
 	bool runOnFunction(Function &F) override {
 
+		errs() << FunctionName << "\n";
+
+
 		errs() << "Instrumenting: " << F.getName() << "\n"; // Debug output
-		if (F.getName().startswith("__device__")) // Skip host functions
+		if (F.getName().find(FunctionName) == std::string::npos) // Skip host functions
 			return false;
 		
-		errs() << "Enetred to device instrumentation: " << F.getName() << "\n"; // Debug output
+		errs() << "Entered to device instrumentation: " << F.getName() << "\n"; // Debug output
 
 		LLVMContext &Ctx = F.getContext();
 		Module *M = F.getParent();
@@ -3543,8 +3547,10 @@ struct MemoryBandwidthPass : public FunctionPass {
 		for (auto &BB : F) {
 			for (auto &I : BB) {
 				if (auto *LI = dyn_cast<LoadInst>(&I)) {
+					printf("Hello I am Load\n");
 					instrumentMemoryOp(LI, /*isLoad=*/true);
 				} else if (auto *SI = dyn_cast<StoreInst>(&I)) {
+					printf("Hello I am Store\n");
 					instrumentMemoryOp(SI, /*isLoad=*/false);
 				}
 			}
@@ -3568,9 +3574,29 @@ struct MemoryBandwidthPass : public FunctionPass {
 		}
 		Builder.SetCurrentDebugLocation(DbgLoc);
 	
-		Type *DataType = isLoad ? MemOp->getType() 
-								 : cast<StoreInst>(MemOp)->getValueOperand()->getType();
+		Type *DataType = isLoad ? MemOp->getType()
+								: cast<StoreInst>(MemOp)->getValueOperand()->getType();
 		uint64_t bytesAccessed = DataType->getPrimitiveSizeInBits() / 8;
+		
+		// Get string representation of the data type
+		std::string TypeStr;
+		raw_string_ostream RSO(TypeStr);
+		DataType->print(RSO);
+
+		// Convert the full instruction to a string
+		std::string InstStr;
+		raw_string_ostream InstOS(InstStr);
+		MemOp->print(InstOS);  // 'I' is the Instruction*
+		
+		// Get instruction opcode name
+		std::string InstType = MemOp->getOpcodeName();  // e.g., "load" or "store"
+		
+		// Print debug info
+		outs() << "Instruction: " << InstOS.str()
+			   << ", Type: " << RSO.str()
+			   << ", Bytes Accessed: " << bytesAccessed << "\n";
+		
+
 	
 		// Insert timing before memory op
 		CallInst *StartTimeCall = Builder.CreateCall(hookStartTimer, {});
@@ -3590,13 +3616,133 @@ struct MemoryBandwidthPass : public FunctionPass {
 			Duration
 		});
 		RecordCall->setDebugLoc(DbgLoc);
-	}};
-	
-	
-}
+	}
+	};
+struct ComputeIntensityPass : public FunctionPass {
+	static char ID;
+	FunctionCallee hookRecordFlops, hookRecordBytes;
+
+	ComputeIntensityPass() : FunctionPass(ID) {}
+
+	bool runOnFunction(Function &F) override {
+        errs() << "Instrumenting: " << F.getName() << "\n";
+        
+        if (!FunctionName.empty() && F.getName().find(FunctionName) == std::string::npos) {
+            return false;
+        }
+
+        LLVMContext &Ctx = F.getContext();
+        Module *M = F.getParent();
+
+        // Initialize hooks
+        Type *VoidTy = Type::getVoidTy(Ctx);
+        Type *Int64Ty = Type::getInt64Ty(Ctx);
+
+        // Hook for recording individual FLOPs
+        hookRecordFlops = M->getOrInsertFunction(
+            "recordFlop",
+            FunctionType::get(VoidTy, {Int64Ty}, false)
+        );
+
+        // Hook for recording memory accesses
+        hookRecordBytes = M->getOrInsertFunction(
+            "recordBytesAccess",
+            FunctionType::get(VoidTy, {Int64Ty}, false)
+        );
+
+        // Mark hooks as noinline
+        if (Function *HookFn = dyn_cast<Function>(hookRecordFlops.getCallee())) {
+            HookFn->addFnAttr(Attribute::NoInline);
+        }
+        if (Function *HookFn = dyn_cast<Function>(hookRecordBytes.getCallee())) {
+            HookFn->addFnAttr(Attribute::NoInline);
+        }
+
+        const DataLayout &DL = M->getDataLayout();
+
+        // Instrument all relevant operations
+        for (auto &BB : F) {
+            for (auto &I : BB) {
+                // Instrument floating point operations
+                if (I.isBinaryOp()) {
+                    switch (I.getOpcode()) {
+                        case Instruction::FAdd:
+                        case Instruction::FSub:
+                        case Instruction::FMul:
+                        case Instruction::FDiv:
+                        case Instruction::FRem:
+                            instrumentFlop(&I);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                // Instrument memory accesses
+                if (auto *LI = dyn_cast<LoadInst>(&I)) {
+                    instrumentMemoryAccess(LI, true, DL);
+                } else if (auto *SI = dyn_cast<StoreInst>(&I)) {
+                    instrumentMemoryAccess(SI, false, DL);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    void instrumentFlop(Instruction *FlopInst) {
+        IRBuilder<> Builder(FlopInst);
+        LLVMContext &Ctx = FlopInst->getContext();
+
+        // Handle debug information
+        DebugLoc DbgLoc = FlopInst->getDebugLoc();
+        if (!DbgLoc) {
+            if (DISubprogram *SP = FlopInst->getFunction()->getSubprogram()) {
+                DbgLoc = DILocation::get(Ctx, 0, 0, SP);
+            }
+        }
+        Builder.SetCurrentDebugLocation(DbgLoc);
+
+        // Record 1 FLOP for this operation
+        CallInst *CI = Builder.CreateCall(hookRecordFlops, {
+            Builder.getInt64(1)
+        });
+        CI->setDebugLoc(DbgLoc);
+    }
+
+    void instrumentMemoryAccess(Instruction *MemOp, bool isLoad, const DataLayout &DL) {
+        IRBuilder<> Builder(MemOp);
+        LLVMContext &Ctx = MemOp->getContext();
+
+        // Handle debug information
+        DebugLoc DbgLoc = MemOp->getDebugLoc();
+        if (!DbgLoc) {
+            if (DISubprogram *SP = MemOp->getFunction()->getSubprogram()) {
+                DbgLoc = DILocation::get(Ctx, 0, 0, SP);
+            }
+        }
+        Builder.SetCurrentDebugLocation(DbgLoc);
+
+        // Calculate bytes accessed
+        Type *DataType = isLoad ? MemOp->getType()
+								: cast<StoreInst>(MemOp)->getValueOperand()->getType();
+		uint64_t bytesAccessed = DataType->getPrimitiveSizeInBits() / 8;
+
+        // Record memory access
+        CallInst *CI = Builder.CreateCall(hookRecordBytes, {
+            Builder.getInt64(bytesAccessed)
+        });
+        CI->setDebugLoc(DbgLoc);
+    }	
+
+};
+
+char ComputeIntensityPass::ID = 0;
+static RegisterPass<ComputeIntensityPass> CI("compute-intensity", "Measures FLOPs/memory acceses in bytes",false,false);
 
 char MemoryBandwidthPass::ID = 0;
 static RegisterPass<MemoryBandwidthPass> MM("memory-bandwidth", "Measures GPU memory bandwidth per access",false,false);
+
 
 char DetectLoadStorePass::ID = 0;
 static RegisterPass<DetectLoadStorePass> A("DetectLoadStorePass", "instrument at !!", false, false);
