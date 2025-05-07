@@ -3507,9 +3507,92 @@ namespace{
 
 	}; //end of pass
 
+struct MemoryBandwidthPass : public FunctionPass {
+	static char ID;
+	FunctionCallee hookStartTimer, hookEndTimer, hookRecordAccess;
+
+	MemoryBandwidthPass() : FunctionPass(ID) {}
+
+	bool runOnFunction(Function &F) override {
+
+		errs() << "Instrumenting: " << F.getName() << "\n"; // Debug output
+		if (F.getName().startswith("__device__")) // Skip host functions
+			return false;
+		
+		errs() << "Enetred to device instrumentation: " << F.getName() << "\n"; // Debug output
+
+		LLVMContext &Ctx = F.getContext();
+		Module *M = F.getParent();
+
+		// Declare instrumentation functions
+		Type *VoidTy = Type::getVoidTy(Ctx);
+		Type *Int64Ty = Type::getInt64Ty(Ctx);
+
+		// Hook to record memory access (bytes, time_ns)
+		FunctionType *RecordAccessTy = FunctionType::get(VoidTy, {Int64Ty, Int64Ty}, false);
+		hookRecordAccess = M->getOrInsertFunction("recordMemAccess", RecordAccessTy);
+
+		// Hook to get current GPU timestamp
+		FunctionType *GetTimeTy = FunctionType::get(Int64Ty, {}, false);
+		hookStartTimer = M->getOrInsertFunction("getGpuTime", GetTimeTy);
+
+		for (auto &BB : F) {
+			for (auto &I : BB) {
+				if (auto *LI = dyn_cast<LoadInst>(&I)) {
+					instrumentMemoryOp(LI, /*isLoad=*/true);
+				} else if (auto *SI = dyn_cast<StoreInst>(&I)) {
+					instrumentMemoryOp(SI, /*isLoad=*/false);
+				}
+			}
+		}
+		return true;
+	}
+
+	void instrumentMemoryOp(Instruction *MemOp, bool isLoad) {
+		IRBuilder<> Builder(MemOp);
+		LLVMContext &Ctx = MemOp->getContext();
+	
+		// Try to get debug location from the original instruction
+		DebugLoc DbgLoc = MemOp->getDebugLoc();
+		if (!DbgLoc) {
+			// If no debug info, create a synthetic debug location or inherit from function
+			if (DISubprogram *SP = MemOp->getFunction()->getSubprogram()) {
+				DbgLoc = DILocation::get(Ctx, 0, 0, SP);
+			} else {
+				DbgLoc = DebugLoc();
+			}
+		}
+		Builder.SetCurrentDebugLocation(DbgLoc);
+	
+		Type *DataType = isLoad ? MemOp->getType() 
+								 : cast<StoreInst>(MemOp)->getValueOperand()->getType();
+		uint64_t bytesAccessed = DataType->getPrimitiveSizeInBits() / 8;
+	
+		// Insert timing before memory op
+		CallInst *StartTimeCall = Builder.CreateCall(hookStartTimer, {});
+		StartTimeCall->setDebugLoc(DbgLoc);
+	
+		// Insert timing after memory op
+		Builder.SetInsertPoint(MemOp->getNextNode());
+		CallInst *EndTimeCall = Builder.CreateCall(hookStartTimer, {});
+		EndTimeCall->setDebugLoc(DbgLoc);
+	
+		// Compute duration (EndTime - StartTime)
+		Value *Duration = Builder.CreateSub(EndTimeCall, StartTimeCall);
+	
+		// Record access (bytes, time)
+		CallInst *RecordCall = Builder.CreateCall(hookRecordAccess, {
+			Builder.getInt64(bytesAccessed),
+			Duration
+		});
+		RecordCall->setDebugLoc(DbgLoc);
+	}};
 	
 	
 }
+
+char MemoryBandwidthPass::ID = 0;
+static RegisterPass<MemoryBandwidthPass> MM("memory-bandwidth", "Measures GPU memory bandwidth per access",false,false);
 
 char DetectLoadStorePass::ID = 0;
 static RegisterPass<DetectLoadStorePass> A("DetectLoadStorePass", "instrument at !!", false, false);
