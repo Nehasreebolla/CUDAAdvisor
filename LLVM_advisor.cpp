@@ -306,8 +306,6 @@ namespace{
 
         virtual bool runOnModule(Module &M){
 
-
-
 			int lineStart = -1, lineEnd = -1;
 
 			if (!LineRange.empty()) {
@@ -327,11 +325,7 @@ namespace{
 			LLVMContext &C = M.getContext();
 			errs() << "\n================== Our Pass ==============\n\n";
 			
-			Type* VoidTy = Type::getVoidTy(C); 
-			std::vector<Type*> ArgTypes1 = {};
-			FunctionType *FuncType1 = FunctionType::get(VoidTy, ArgTypes1, false);
-            hook1 = M.getOrInsertFunction("print", FuncType1);
-
+			
 			std::vector<Instruction*> instructionsToInstrument;
 
 
@@ -358,57 +352,6 @@ namespace{
 		}
 
 	};
-
-	//pass : To detect load/store instructions
-
-	struct DetectLoadStorePass : public FunctionPass {
-		static char ID; // Pass identification, replacement for typeid
-		DetectLoadStorePass() : FunctionPass(ID) {}
-	
-		bool runOnFunction(Function &F) override {
-		  errs() << "Function: " << F.getName() << "\n";
-	
-		  for (BasicBlock &BB : F) {
-			for (Instruction &I : BB) {
-			  // Check if the instruction is a LoadInst
-			  if (LoadInst *LI = dyn_cast<LoadInst>(&I)) {
-				Value *Addr = LI->getPointerOperand();
-				unsigned Line = getLineNumber(&I);
-				errs() << "Load: " << *LI << " | Address: " << *Addr;
-				if (Line != -1) {
-				  errs() << " | Line: " << Line;
-				} else {
-				  errs() << " | Line: <unknown>";
-				}
-				errs() << "\n";
-			  }
-			  // Check if the instruction is a StoreInst
-			  else if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
-				Value *Addr = SI->getPointerOperand();
-				unsigned Line = getLineNumber(&I);
-				errs() << "Store: " << *SI << " | Address: " << *Addr;
-				if (Line != -1) {
-				  errs() << " | Line: " << Line;
-				} else {
-				  errs() << " | Line: <unknown>";
-				}
-				errs() << "\n";
-			  }
-			}
-		  }
-		  return false; // Pass does not modify the IR
-		}
-	
-		// Helper function to extract line number from debug metadata
-		unsigned getLineNumber(Instruction *I) {
-		  if (MDNode *DebugNode = I->getMetadata("dbg")) {
-			if (DILocation *Loc = dyn_cast<DILocation>(DebugNode)) {
-			  return Loc->getLine();
-			}
-		  }
-		  return -1; // Return 0 if no debug info is available
-		}
-	  };
 
 
 	// mandatory pass  for printing stuff maintains call stack?
@@ -3512,230 +3455,601 @@ namespace{
 
 	}; //end of pass
 
-struct MemoryBandwidthPass : public FunctionPass {
-	static char ID;
-	FunctionCallee hookStartTimer, hookEndTimer, hookRecordAccess;
+	struct MemoryBandwidthPass : public FunctionPass {
+		static char ID;
+		FunctionCallee hookStartTimer, hookEndTimer, hookRecordAccess;
 
-	MemoryBandwidthPass() : FunctionPass(ID) {}
-
-	bool runOnFunction(Function &F) override {
-
-		errs() << FunctionName << "\n";
+		MemoryBandwidthPass() : FunctionPass(ID) {}
 
 
-		errs() << "Instrumenting: " << F.getName() << "\n"; // Debug output
-		if (F.getName().find(FunctionName) == std::string::npos) // Skip host functions
+		bool overlap(int start, int end, int lineStart, int lineEnd){
+
+			if (start > end || lineStart > lineEnd)
+				return false; // Invalid range
+
+			if (start > lineEnd || end < lineStart) {
+				return false; // No overlap
+			}
+
+			return true; // Overlap exists
+		}
+
+		void findInstructionsToInstrument(Function *F, std::vector<Instruction*> &instructionsToInstrument, int lineStart, int lineEnd) {	
+
+			std::unordered_map<Instruction*, int> LineStart; // Min line number (predecessor)
+			std::unordered_map<Instruction*, int> LineEnd;   // Max line number (successor)
+			std::unordered_set<Instruction*> InWorklist;     // Fast O(1) check for presence
+			std::queue<Instruction*> Worklist;               // FIFO queue for processing
+
+
+			// For getting LineStart
+
+			for (Instruction &I : instructions(*F)) {
+				if (DILocation *Loc = I.getDebugLoc()) {
+					LineStart[&I] = Loc->getLine();
+				} else {
+					LineStart[&I] = INT_MAX;
+					Worklist.push(&I);
+					InWorklist.insert(&I);
+				}
+			}
+
+			while (!Worklist.empty()) {
+				Instruction *I = Worklist.front();
+				Worklist.pop();
+				InWorklist.erase(I);
+			
+				int oldMin = LineStart[I];
+				int newMin = oldMin;
+			
+				// If not the first instruction, take the previous instruction's line
+				if (Instruction *Prev = I->getPrevNode()) {
+					newMin = std::min(newMin, LineStart[Prev]);
+				} else {
+					// First instruction in the block: check predecessors' terminators
+					for (BasicBlock *Pred : predecessors(I->getParent())) {
+						Instruction *Term = Pred->getTerminator();
+						newMin = std::min(newMin, LineStart[Term]);
+					}
+				}
+			
+				// If the minimum line changed, propagate to successors
+				if (newMin < oldMin) {
+					LineStart[I] = newMin;
+			
+					// Successors:
+					if (Instruction *Next = I->getNextNode()) {
+						if (InWorklist.insert(Next).second) {
+							Worklist.push(Next);
+						}
+					} else {
+						// If it's the last in the block, push the first of each successor
+						for (BasicBlock *Succ : successors(I->getParent())) {
+							Instruction *First = &Succ->front();
+							if (InWorklist.insert(First).second) {
+								Worklist.push(First);
+							}
+						}
+					}
+				}
+			}
+			
+
+			// For getting LineEnd
+
+			for (Instruction &I : instructions(*F)) {
+				if (DILocation *Loc = I.getDebugLoc()) {
+					LineEnd[&I] = Loc->getLine();
+				} else {
+					LineEnd[&I] = -1;
+					Worklist.push(&I);
+					InWorklist.insert(&I);
+				}
+			}
+
+			while (!Worklist.empty()) {
+				Instruction *I = Worklist.front();
+				Worklist.pop();
+				InWorklist.erase(I);
+			
+				int oldMax = LineEnd[I];
+				int newMax = oldMax;
+			
+				// If not the last instruction, take the next instruction's line
+				if (Instruction *Next = I->getNextNode()) {
+					newMax = std::max(newMax, LineEnd[Next]);
+				} else {
+					// Last instruction in the block: check successors' first instructions
+					for (BasicBlock *Succ : successors(I->getParent())) {
+						Instruction *First = &Succ->front();
+						newMax = std::max(newMax, LineEnd[First]);
+					}
+				}
+			
+				// If the maximum line changed, propagate to predecessors
+				if (newMax > oldMax) {
+					LineEnd[I] = newMax;
+			
+					// Predecessors:
+					if (Instruction *Prev = I->getPrevNode()) {
+						if (InWorklist.insert(Prev).second) {
+							Worklist.push(Prev);
+						}
+					} else {
+						// If it's the first in the block, push all predecessors' terminators
+						for (BasicBlock *Pred : predecessors(I->getParent())) {
+							Instruction *Term = Pred->getTerminator();
+							if (InWorklist.insert(Term).second) {
+								Worklist.push(Term);
+							}
+						}
+					}
+				}
+			}
+			
+			
+			for (Instruction &I : instructions(*F)) {
+				if (!I.getDebugLoc()) {
+					int start = LineStart[&I];
+					int end = LineEnd[&I];
+					if (start != INT_MAX && end != -1) {
+
+						outs() << "Instruction: " << I << " → Line Range: [" << start << ", " << end << "]\n";
+
+						if (overlap(start, end, lineStart, lineEnd)) {
+							instructionsToInstrument.push_back(&I);
+							outs() << "Instruction to instrument: " << I << "\n";
+						}
+
+					}
+					else {
+						outs() << "Instruction Range Not found: " << I << " → Line Range: [" << start << ", " << end << "]\n";
+					}
+				}
+				else {
+					DILocation *Loc = I.getDebugLoc();
+					int lineNumber = Loc->getLine();
+
+					if (lineNumber >= lineStart && lineNumber <= lineEnd) {
+						instructionsToInstrument.push_back(&I);
+						outs() << "Instruction to instrument: " << I << "\n";
+					}
+					
+				}
+			}
+			
+
+			return;
+		}
+
+
+		bool runOnFunction(Function &F) override {
+
+			int lineStart = -1, lineEnd = -1;
+
+			if (!LineRange.empty()) {
+				size_t dashPos = LineRange.find('-');
+				if (dashPos != std::string::npos) {
+					lineStart = std::stoi(LineRange.substr(0, dashPos));
+					lineEnd = std::stoi(LineRange.substr(dashPos + 1));
+				} else {
+					errs() << "Invalid line-range format. Expected format: start-end\n";
+					return false;
+				}
+			}
+
+			std::cout << "Line range: " << lineStart << " to " << lineEnd << std::endl;
+			
+			
+			errs() << FunctionName << "\n";
+			
+			
+			errs() << "Instrumenting: " << F.getName() << "\n"; // Debug output
+			if (F.getName().find(FunctionName) == std::string::npos) // Skip host functions
 			return false;
-		
-		errs() << "Entered to device instrumentation: " << F.getName() << "\n"; // Debug output
+			
+			
 
-		LLVMContext &Ctx = F.getContext();
-		Module *M = F.getParent();
+			errs() << "Entered to device instrumentation: " << F.getName() << "\n"; // Debug output
 
-		// Declare instrumentation functions
-		Type *VoidTy = Type::getVoidTy(Ctx);
-		Type *Int64Ty = Type::getInt64Ty(Ctx);
+			
+			LLVMContext &Ctx = F.getContext();
+			Module *M = F.getParent();
 
-		// Hook to record memory access (bytes, time_ns)
-		FunctionType *RecordAccessTy = FunctionType::get(VoidTy, {Int64Ty, Int64Ty}, false);
-		hookRecordAccess = M->getOrInsertFunction("recordMemAccess", RecordAccessTy);
+			// Declare instrumentation functions
+			Type *VoidTy = Type::getVoidTy(Ctx);
+			Type *Int64Ty = Type::getInt64Ty(Ctx);
 
-		// Hook to get current GPU timestamp
-		FunctionType *GetTimeTy = FunctionType::get(Int64Ty, {}, false);
-		hookStartTimer = M->getOrInsertFunction("getGpuTime", GetTimeTy);
+			// Hook to record memory access (bytes, time_ns)
+			FunctionType *RecordAccessTy = FunctionType::get(VoidTy, {Int64Ty, Int64Ty}, false);
+			hookRecordAccess = M->getOrInsertFunction("recordMemAccess", RecordAccessTy);
 
-		for (auto &BB : F) {
-			for (auto &I : BB) {
-				if (auto *LI = dyn_cast<LoadInst>(&I)) {
+			// Hook to get current GPU timestamp
+			FunctionType *GetTimeTy = FunctionType::get(Int64Ty, {}, false);
+			hookStartTimer = M->getOrInsertFunction("getGpuTime", GetTimeTy);
+
+			std::vector<Instruction*> instructionsToInstrument;
+
+			findInstructionsToInstrument(&F, instructionsToInstrument, lineStart, lineEnd);
+
+
+			for (auto I: instructionsToInstrument) {
+
+				if (auto *LI = dyn_cast<LoadInst>(I)) {
 					printf("Hello I am Load\n");
 					instrumentMemoryOp(LI, /*isLoad=*/true);
-				} else if (auto *SI = dyn_cast<StoreInst>(&I)) {
+				} else if (auto *SI = dyn_cast<StoreInst>(I)) {
 					printf("Hello I am Store\n");
 					instrumentMemoryOp(SI, /*isLoad=*/false);
 				}
 			}
-		}
-		return true;
-	}
 
-	void instrumentMemoryOp(Instruction *MemOp, bool isLoad) {
-		IRBuilder<> Builder(MemOp);
-		LLVMContext &Ctx = MemOp->getContext();
-	
-		// Try to get debug location from the original instruction
-		DebugLoc DbgLoc = MemOp->getDebugLoc();
-		if (!DbgLoc) {
-			// If no debug info, create a synthetic debug location or inherit from function
-			if (DISubprogram *SP = MemOp->getFunction()->getSubprogram()) {
-				DbgLoc = DILocation::get(Ctx, 0, 0, SP);
-			} else {
-				DbgLoc = DebugLoc();
+			return true;
+		}
+
+		void instrumentMemoryOp(Instruction *MemOp, bool isLoad) {
+			IRBuilder<> Builder(MemOp);
+			LLVMContext &Ctx = MemOp->getContext();
+		
+			// Try to get debug location from the original instruction
+			DebugLoc DbgLoc = MemOp->getDebugLoc();
+			if (!DbgLoc) {
+				// If no debug info, create a synthetic debug location or inherit from function
+				if (DISubprogram *SP = MemOp->getFunction()->getSubprogram()) {
+					DbgLoc = DILocation::get(Ctx, 0, 0, SP);
+				} else {
+					DbgLoc = DebugLoc();
+				}
 			}
+			Builder.SetCurrentDebugLocation(DbgLoc);
+		
+			Type *DataType = isLoad ? MemOp->getType()
+									: cast<StoreInst>(MemOp)->getValueOperand()->getType();
+			uint64_t bytesAccessed = DataType->getPrimitiveSizeInBits() / 8;
+			
+			// Get string representation of the data type
+			std::string TypeStr;
+			raw_string_ostream RSO(TypeStr);
+			DataType->print(RSO);
+
+			// Convert the full instruction to a string
+			std::string InstStr;
+			raw_string_ostream InstOS(InstStr);
+			MemOp->print(InstOS);  // 'I' is the Instruction*
+			
+			// Get instruction opcode name
+			std::string InstType = MemOp->getOpcodeName();  // e.g., "load" or "store"
+			
+			// Print debug info
+			outs() << "Instruction: " << InstOS.str()
+				<< ", Type: " << RSO.str()
+				<< ", Bytes Accessed: " << bytesAccessed << "\n";
+			
+
+		
+			// Insert timing before memory op
+			CallInst *StartTimeCall = Builder.CreateCall(hookStartTimer, {});
+			StartTimeCall->setDebugLoc(DbgLoc);
+		
+			// Insert timing after memory op
+			Builder.SetInsertPoint(MemOp->getNextNode());
+			CallInst *EndTimeCall = Builder.CreateCall(hookStartTimer, {});
+			EndTimeCall->setDebugLoc(DbgLoc);
+		
+			// Compute duration (EndTime - StartTime)
+			Value *Duration = Builder.CreateSub(EndTimeCall, StartTimeCall);
+		
+			// Record access (bytes, time)
+			CallInst *RecordCall = Builder.CreateCall(hookRecordAccess, {
+				Builder.getInt64(bytesAccessed),
+				Duration
+			});
+			RecordCall->setDebugLoc(DbgLoc);
 		}
-		Builder.SetCurrentDebugLocation(DbgLoc);
-	
-		Type *DataType = isLoad ? MemOp->getType()
-								: cast<StoreInst>(MemOp)->getValueOperand()->getType();
-		uint64_t bytesAccessed = DataType->getPrimitiveSizeInBits() / 8;
-		
-		// Get string representation of the data type
-		std::string TypeStr;
-		raw_string_ostream RSO(TypeStr);
-		DataType->print(RSO);
+		};
 
-		// Convert the full instruction to a string
-		std::string InstStr;
-		raw_string_ostream InstOS(InstStr);
-		MemOp->print(InstOS);  // 'I' is the Instruction*
-		
-		// Get instruction opcode name
-		std::string InstType = MemOp->getOpcodeName();  // e.g., "load" or "store"
-		
-		// Print debug info
-		outs() << "Instruction: " << InstOS.str()
-			   << ", Type: " << RSO.str()
-			   << ", Bytes Accessed: " << bytesAccessed << "\n";
-		
+	struct ComputeIntensityPass : public FunctionPass {
+		static char ID;
+		FunctionCallee hookRecordFlops, hookRecordBytes;
 
-	
-		// Insert timing before memory op
-		CallInst *StartTimeCall = Builder.CreateCall(hookStartTimer, {});
-		StartTimeCall->setDebugLoc(DbgLoc);
-	
-		// Insert timing after memory op
-		Builder.SetInsertPoint(MemOp->getNextNode());
-		CallInst *EndTimeCall = Builder.CreateCall(hookStartTimer, {});
-		EndTimeCall->setDebugLoc(DbgLoc);
-	
-		// Compute duration (EndTime - StartTime)
-		Value *Duration = Builder.CreateSub(EndTimeCall, StartTimeCall);
-	
-		// Record access (bytes, time)
-		CallInst *RecordCall = Builder.CreateCall(hookRecordAccess, {
-			Builder.getInt64(bytesAccessed),
-			Duration
-		});
-		RecordCall->setDebugLoc(DbgLoc);
-	}
+		ComputeIntensityPass() : FunctionPass(ID) {}
+
+		bool overlap(int start, int end, int lineStart, int lineEnd){
+
+			if (start > end || lineStart > lineEnd)
+				return false; // Invalid range
+
+			if (start > lineEnd || end < lineStart) {
+				return false; // No overlap
+			}
+
+			return true; // Overlap exists
+		}
+
+		void findInstructionsToInstrument(Function *F, std::vector<Instruction*> &instructionsToInstrument, int lineStart, int lineEnd) {	
+
+			std::unordered_map<Instruction*, int> LineStart; // Min line number (predecessor)
+			std::unordered_map<Instruction*, int> LineEnd;   // Max line number (successor)
+			std::unordered_set<Instruction*> InWorklist;     // Fast O(1) check for presence
+			std::queue<Instruction*> Worklist;               // FIFO queue for processing
+
+
+			// For getting LineStart
+
+			for (Instruction &I : instructions(*F)) {
+				if (DILocation *Loc = I.getDebugLoc()) {
+					LineStart[&I] = Loc->getLine();
+				} else {
+					LineStart[&I] = INT_MAX;
+					Worklist.push(&I);
+					InWorklist.insert(&I);
+				}
+			}
+
+			while (!Worklist.empty()) {
+				Instruction *I = Worklist.front();
+				Worklist.pop();
+				InWorklist.erase(I);
+			
+				int oldMin = LineStart[I];
+				int newMin = oldMin;
+			
+				// If not the first instruction, take the previous instruction's line
+				if (Instruction *Prev = I->getPrevNode()) {
+					newMin = std::min(newMin, LineStart[Prev]);
+				} else {
+					// First instruction in the block: check predecessors' terminators
+					for (BasicBlock *Pred : predecessors(I->getParent())) {
+						Instruction *Term = Pred->getTerminator();
+						newMin = std::min(newMin, LineStart[Term]);
+					}
+				}
+			
+				// If the minimum line changed, propagate to successors
+				if (newMin < oldMin) {
+					LineStart[I] = newMin;
+			
+					// Successors:
+					if (Instruction *Next = I->getNextNode()) {
+						if (InWorklist.insert(Next).second) {
+							Worklist.push(Next);
+						}
+					} else {
+						// If it's the last in the block, push the first of each successor
+						for (BasicBlock *Succ : successors(I->getParent())) {
+							Instruction *First = &Succ->front();
+							if (InWorklist.insert(First).second) {
+								Worklist.push(First);
+							}
+						}
+					}
+				}
+			}
+			
+
+			// For getting LineEnd
+
+			for (Instruction &I : instructions(*F)) {
+				if (DILocation *Loc = I.getDebugLoc()) {
+					LineEnd[&I] = Loc->getLine();
+				} else {
+					LineEnd[&I] = -1;
+					Worklist.push(&I);
+					InWorklist.insert(&I);
+				}
+			}
+
+			while (!Worklist.empty()) {
+				Instruction *I = Worklist.front();
+				Worklist.pop();
+				InWorklist.erase(I);
+			
+				int oldMax = LineEnd[I];
+				int newMax = oldMax;
+			
+				// If not the last instruction, take the next instruction's line
+				if (Instruction *Next = I->getNextNode()) {
+					newMax = std::max(newMax, LineEnd[Next]);
+				} else {
+					// Last instruction in the block: check successors' first instructions
+					for (BasicBlock *Succ : successors(I->getParent())) {
+						Instruction *First = &Succ->front();
+						newMax = std::max(newMax, LineEnd[First]);
+					}
+				}
+			
+				// If the maximum line changed, propagate to predecessors
+				if (newMax > oldMax) {
+					LineEnd[I] = newMax;
+			
+					// Predecessors:
+					if (Instruction *Prev = I->getPrevNode()) {
+						if (InWorklist.insert(Prev).second) {
+							Worklist.push(Prev);
+						}
+					} else {
+						// If it's the first in the block, push all predecessors' terminators
+						for (BasicBlock *Pred : predecessors(I->getParent())) {
+							Instruction *Term = Pred->getTerminator();
+							if (InWorklist.insert(Term).second) {
+								Worklist.push(Term);
+							}
+						}
+					}
+				}
+			}
+			
+			
+			for (Instruction &I : instructions(*F)) {
+				if (!I.getDebugLoc()) {
+					int start = LineStart[&I];
+					int end = LineEnd[&I];
+					if (start != INT_MAX && end != -1) {
+
+						outs() << "Instruction: " << I << " → Line Range: [" << start << ", " << end << "]\n";
+
+						if (overlap(start, end, lineStart, lineEnd)) {
+							instructionsToInstrument.push_back(&I);
+							outs() << "Instruction to instrument: " << I << "\n";
+						}
+
+					}
+					else {
+						outs() << "Instruction Range Not found: " << I << " → Line Range: [" << start << ", " << end << "]\n";
+					}
+				}
+				else {
+					DILocation *Loc = I.getDebugLoc();
+					int lineNumber = Loc->getLine();
+
+					if (lineNumber >= lineStart && lineNumber <= lineEnd) {
+						instructionsToInstrument.push_back(&I);
+						outs() << "Instruction to instrument: " << I << "\n";
+					}
+					
+				}
+			}
+			
+
+			return;
+		}
+
+
+		bool runOnFunction(Function &F) override {
+
+			int lineStart = -1, lineEnd = -1;
+
+			if (!LineRange.empty()) {
+				size_t dashPos = LineRange.find('-');
+				if (dashPos != std::string::npos) {
+					lineStart = std::stoi(LineRange.substr(0, dashPos));
+					lineEnd = std::stoi(LineRange.substr(dashPos + 1));
+				} else {
+					errs() << "Invalid line-range format. Expected format: start-end\n";
+					return false;
+				}
+			}
+
+			std::cout << "Line range: " << lineStart << " to " << lineEnd << std::endl;
+
+
+			errs() << "Instrumenting: " << F.getName() << "\n";
+			
+			if (!FunctionName.empty() && F.getName().find(FunctionName) == std::string::npos) {
+				return false;
+			}
+
+			
+
+			LLVMContext &Ctx = F.getContext();
+			Module *M = F.getParent();
+
+			// Initialize hooks
+			Type *VoidTy = Type::getVoidTy(Ctx);
+			Type *Int64Ty = Type::getInt64Ty(Ctx);
+
+			// Hook for recording individual FLOPs
+			hookRecordFlops = M->getOrInsertFunction(
+				"recordFlop",
+				FunctionType::get(VoidTy, {Int64Ty}, false)
+			);
+
+			// Hook for recording memory accesses
+			hookRecordBytes = M->getOrInsertFunction(
+				"recordBytesAccess",
+				FunctionType::get(VoidTy, {Int64Ty}, false)
+			);
+
+			// Mark hooks as noinline
+			if (Function *HookFn = dyn_cast<Function>(hookRecordFlops.getCallee())) {
+				HookFn->addFnAttr(Attribute::NoInline);
+			}
+			if (Function *HookFn = dyn_cast<Function>(hookRecordBytes.getCallee())) {
+				HookFn->addFnAttr(Attribute::NoInline);
+			}
+
+			const DataLayout &DL = M->getDataLayout();
+
+			std::vector<Instruction*> instructionsToInstrument;
+			findInstructionsToInstrument(&F, instructionsToInstrument, lineStart, lineEnd);
+
+
+			// Instrument all relevant operations
+			for (auto I: instructionsToInstrument) {
+				// Instrument floating point operations
+				if (I->isBinaryOp()) {
+					switch (I->getOpcode()) {
+						case Instruction::FAdd:
+						case Instruction::FSub:
+						case Instruction::FMul:
+						case Instruction::FDiv:
+						case Instruction::FRem:
+							instrumentFlop(I);
+							break;
+						default:
+							break;
+					}
+				}
+
+				// Instrument memory accesses
+				if (auto *LI = dyn_cast<LoadInst>(I)) {
+					instrumentMemoryAccess(LI, true, DL);
+				} else if (auto *SI = dyn_cast<StoreInst>(I)) {
+					instrumentMemoryAccess(SI, false, DL);
+				}
+			}
+
+			return true;
+		}
+
+		void instrumentFlop(Instruction *FlopInst) {
+			IRBuilder<> Builder(FlopInst);
+			LLVMContext &Ctx = FlopInst->getContext();
+
+			// Handle debug information
+			DebugLoc DbgLoc = FlopInst->getDebugLoc();
+			if (!DbgLoc) {
+				if (DISubprogram *SP = FlopInst->getFunction()->getSubprogram()) {
+					DbgLoc = DILocation::get(Ctx, 0, 0, SP);
+				}
+			}
+			Builder.SetCurrentDebugLocation(DbgLoc);
+
+			// Record 1 FLOP for this operation
+			CallInst *CI = Builder.CreateCall(hookRecordFlops, {
+				Builder.getInt64(1)
+			});
+			CI->setDebugLoc(DbgLoc);
+		}
+
+		void instrumentMemoryAccess(Instruction *MemOp, bool isLoad, const DataLayout &DL) {
+			IRBuilder<> Builder(MemOp);
+			LLVMContext &Ctx = MemOp->getContext();
+
+			// Handle debug information
+			DebugLoc DbgLoc = MemOp->getDebugLoc();
+			if (!DbgLoc) {
+				if (DISubprogram *SP = MemOp->getFunction()->getSubprogram()) {
+					DbgLoc = DILocation::get(Ctx, 0, 0, SP);
+				}
+			}
+			Builder.SetCurrentDebugLocation(DbgLoc);
+
+			// Calculate bytes accessed
+			Type *DataType = isLoad ? MemOp->getType()
+									: cast<StoreInst>(MemOp)->getValueOperand()->getType();
+			uint64_t bytesAccessed = DataType->getPrimitiveSizeInBits() / 8;
+
+			// Record memory access
+			CallInst *CI = Builder.CreateCall(hookRecordBytes, {
+				Builder.getInt64(bytesAccessed)
+			});
+			CI->setDebugLoc(DbgLoc);
+		}	
+
 	};
-struct ComputeIntensityPass : public FunctionPass {
-	static char ID;
-	FunctionCallee hookRecordFlops, hookRecordBytes;
 
-	ComputeIntensityPass() : FunctionPass(ID) {}
-
-	bool runOnFunction(Function &F) override {
-        errs() << "Instrumenting: " << F.getName() << "\n";
-        
-        if (!FunctionName.empty() && F.getName().find(FunctionName) == std::string::npos) {
-            return false;
-        }
-
-        LLVMContext &Ctx = F.getContext();
-        Module *M = F.getParent();
-
-        // Initialize hooks
-        Type *VoidTy = Type::getVoidTy(Ctx);
-        Type *Int64Ty = Type::getInt64Ty(Ctx);
-
-        // Hook for recording individual FLOPs
-        hookRecordFlops = M->getOrInsertFunction(
-            "recordFlop",
-            FunctionType::get(VoidTy, {Int64Ty}, false)
-        );
-
-        // Hook for recording memory accesses
-        hookRecordBytes = M->getOrInsertFunction(
-            "recordBytesAccess",
-            FunctionType::get(VoidTy, {Int64Ty}, false)
-        );
-
-        // Mark hooks as noinline
-        if (Function *HookFn = dyn_cast<Function>(hookRecordFlops.getCallee())) {
-            HookFn->addFnAttr(Attribute::NoInline);
-        }
-        if (Function *HookFn = dyn_cast<Function>(hookRecordBytes.getCallee())) {
-            HookFn->addFnAttr(Attribute::NoInline);
-        }
-
-        const DataLayout &DL = M->getDataLayout();
-
-        // Instrument all relevant operations
-        for (auto &BB : F) {
-            for (auto &I : BB) {
-                // Instrument floating point operations
-                if (I.isBinaryOp()) {
-                    switch (I.getOpcode()) {
-                        case Instruction::FAdd:
-                        case Instruction::FSub:
-                        case Instruction::FMul:
-                        case Instruction::FDiv:
-                        case Instruction::FRem:
-                            instrumentFlop(&I);
-                            break;
-                        default:
-                            break;
-                    }
-                }
-
-                // Instrument memory accesses
-                if (auto *LI = dyn_cast<LoadInst>(&I)) {
-                    instrumentMemoryAccess(LI, true, DL);
-                } else if (auto *SI = dyn_cast<StoreInst>(&I)) {
-                    instrumentMemoryAccess(SI, false, DL);
-                }
-            }
-        }
-
-        return true;
-    }
-
-    void instrumentFlop(Instruction *FlopInst) {
-        IRBuilder<> Builder(FlopInst);
-        LLVMContext &Ctx = FlopInst->getContext();
-
-        // Handle debug information
-        DebugLoc DbgLoc = FlopInst->getDebugLoc();
-        if (!DbgLoc) {
-            if (DISubprogram *SP = FlopInst->getFunction()->getSubprogram()) {
-                DbgLoc = DILocation::get(Ctx, 0, 0, SP);
-            }
-        }
-        Builder.SetCurrentDebugLocation(DbgLoc);
-
-        // Record 1 FLOP for this operation
-        CallInst *CI = Builder.CreateCall(hookRecordFlops, {
-            Builder.getInt64(1)
-        });
-        CI->setDebugLoc(DbgLoc);
-    }
-
-    void instrumentMemoryAccess(Instruction *MemOp, bool isLoad, const DataLayout &DL) {
-        IRBuilder<> Builder(MemOp);
-        LLVMContext &Ctx = MemOp->getContext();
-
-        // Handle debug information
-        DebugLoc DbgLoc = MemOp->getDebugLoc();
-        if (!DbgLoc) {
-            if (DISubprogram *SP = MemOp->getFunction()->getSubprogram()) {
-                DbgLoc = DILocation::get(Ctx, 0, 0, SP);
-            }
-        }
-        Builder.SetCurrentDebugLocation(DbgLoc);
-
-        // Calculate bytes accessed
-        Type *DataType = isLoad ? MemOp->getType()
-								: cast<StoreInst>(MemOp)->getValueOperand()->getType();
-		uint64_t bytesAccessed = DataType->getPrimitiveSizeInBits() / 8;
-
-        // Record memory access
-        CallInst *CI = Builder.CreateCall(hookRecordBytes, {
-            Builder.getInt64(bytesAccessed)
-        });
-        CI->setDebugLoc(DbgLoc);
-    }	
-
-};
+}
 
 char ComputeIntensityPass::ID = 0;
 static RegisterPass<ComputeIntensityPass> CI("compute-intensity", "Measures FLOPs/memory acceses in bytes",false,false);
@@ -3743,17 +4057,11 @@ static RegisterPass<ComputeIntensityPass> CI("compute-intensity", "Measures FLOP
 char MemoryBandwidthPass::ID = 0;
 static RegisterPass<MemoryBandwidthPass> MM("memory-bandwidth", "Measures GPU memory bandwidth per access",false,false);
 
-
-char DetectLoadStorePass::ID = 0;
-static RegisterPass<DetectLoadStorePass> A("DetectLoadStorePass", "instrument at !!", false, false);
-
-char my_rand::ID = 0;
-static RegisterPass<my_rand> Y("my-rand", "instrument at beginning of some functions hello world!!", false, false);
-
-
 char our_pass::ID = 0;
 static RegisterPass<our_pass> Z("our-pass", "Line Range Instrumentation", false, false);
 
+char my_rand::ID = 0;
+static RegisterPass<my_rand> Y("my-rand", "instrument at beginning of some functions hello world!!", false, false);
 
 char instru_host::ID = 0;
 static RegisterPass<instru_host> X("instru-host", "load/store and call path instrumentation", false, false);
