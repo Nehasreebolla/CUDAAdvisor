@@ -1,0 +1,4 @@
+./run: line 1: ./bicg.exe: No such file or directory
+./runbase: line 1: ./baseline: No such file or directory
+./run: line 1: ./bicg.exe: No such file or directory
+./runbase: line 1: ./baseline: No such file or directory

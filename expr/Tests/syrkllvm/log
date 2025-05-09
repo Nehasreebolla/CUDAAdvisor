@@ -1,0 +1,12 @@
+setting device 0 with name NVIDIA GeForce MX550
+32, 8, 16, 64
+Memory Bandwidth: 0.00087390 GB/s
+Total Bytes Accessed: 4194304 bytes
+Total Time: 4799542592 ns
+
+Compute Intensity Results:
+Total FLOPs: 0
+Total Bytes: 0
+GPU Runtime: 1.390476s
+CPU Runtime: 0.257036s
+Non-Matching CPU-GPU Outputs Beyond Error Threshold of 0.01 Percent: 0
