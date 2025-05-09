@@ -39,5 +39,7 @@ For printing the results, add printComputeIntensity() after cudaSynchronise() ca
 
 ## Authors
 Nitya Bhamidipaty 
+
 Bolla Nehasree
+
 Nethi Keerthana
