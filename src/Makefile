@@ -36,15 +36,15 @@ GC = g++ -std=c++11 # for unordered_map
 
 ## Used in make all
 PASS_SO ?= $(LLVM_DIR)/lib/LLVMCudaAdvisor.so
-BIN_FILE=add_vector
+BIN_FILE=axpy
 SRC_FILE=$(BIN_FILE).cu
 
 INSTRU = -instru-kernel-sig -instru-kernel-basic -instru-kernel-call-path $(INSTRU_TASK) -constmerge
 
-PASS_NAME ?= -our-pass
-LINE_RANGE_DEVICE ?= -line-range=33-34
+PASS_NAME ?= -memory-bandwidth
+LINE_RANGE_DEVICE ?= -line-range=41-60
 LINE_RANGE_HOST ?= -line-range=25-30
-FNAME ?= -fname=addVectors # Function name to instrument
+FNAME ?= -fname=axpy_kernel1 # Function name to instrument
 
 all: $(BIN_FILE)
 

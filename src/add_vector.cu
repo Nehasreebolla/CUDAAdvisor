@@ -3,7 +3,8 @@
 #include <iostream>
 #include <stdio.h>
 #include <cuda_runtime.h>
-#include "my.cu"
+#include "bandwidth_helpers.cu"
+#include "compute_intensity.cu"
 
 
 #define CHECK_CUDA_ERROR(call)                                           \
@@ -20,21 +21,8 @@ extern "C" __global__ void addVectors(float *a, float *b, float *c, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     
     if (i < n){
-        c[i] = a[i] + b[i];
-    
-        if (c[i] > 10){
-            a[i] = 10;
-        }
-        else {
-            a[i] = 11;
-        }
+        c[i] = a[i] + b[i];        
 
-        for (int j = 0; j < 10; ++j) {
-            a[i] += 1;
-            c[i] = c[i]*c[i];
-        }
-
-        b[i] = 2;
     }
     
 }
@@ -72,6 +60,11 @@ int main() {
     // Check for kernel launch errors and sync errors
     CHECK_CUDA_ERROR(cudaGetLastError());   // Kernel launch
     CHECK_CUDA_ERROR(cudaDeviceSynchronize()); // Wait for kernel to finish
+
+    // Measure bandwidth
+    computeBandwidth();
+    // Measure compute intensity
+    printComputeIntensity();
 
     // Copy result from device to host
     CHECK_CUDA_ERROR(cudaMemcpy(h_c, d_c, size, cudaMemcpyDeviceToHost));

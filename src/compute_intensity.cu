@@ -21,7 +21,7 @@ extern "C" void printComputeIntensity() {
     printf("Total FLOPs: %llu\n", flops);
     printf("Total Bytes: %llu\n", bytes);
     if (bytes > 0) {
-        printf("Compute Intensity: %.2f FLOPs/byte\n", (double)flops/bytes);
+        printf("Compute Intensity: %.8f FLOPs/byte\n", (double)flops/bytes);
     }
     
     // Reset counters before kernel launch

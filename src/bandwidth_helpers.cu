@@ -19,10 +19,11 @@ extern "C" void computeBandwidth() {
     unsigned long long bytes, time_ns;
     cudaMemcpyFromSymbol(&bytes, total_bytes_accessed, sizeof(unsigned long long));
     cudaMemcpyFromSymbol(&time_ns, total_memory_time_ns, sizeof(unsigned long long));
-    double bandwidth = (bytes/(time_ns * 1e-9));
-	printf("Memory Bandwidth: %.2f GB/s\n", bandwidth);
-    printf("Total Bytes Accessed: %llu\n", bytes);
-    printf("Total Time: %.3f ms\n", time_ns * 1000.0);
+    double bandwidth = ((double)bytes / 1e9) / (time_ns * 1e-9);  // GB/s
+    
+    printf("Memory Bandwidth: %.8f GB/cycles\n", bandwidth);
+    printf("Total Bytes Accessed: %llu bytes\n", bytes);
+    printf("Total Time: %.8llu cycles\n", time_ns);  // ns 
 }
 
 

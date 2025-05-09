@@ -116,7 +116,7 @@ int main(int argc, char* argv[]) {
 
     axpy_kernel1<<<CTAs, Threads>>>(a, device_x, device_y);
     cudaDeviceSynchronize();
-	//computeBandwidth();
+	computeBandwidth();
 	printComputeIntensity();
 
     axpy_kernel2<<<CTAs, Threads>>>(a, device_x, device_y);
