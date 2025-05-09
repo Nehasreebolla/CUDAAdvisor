@@ -1,4 +1,4 @@
-# CUDAAdvisor
+# Dynamic profiling at sub-kernel level using LLVM
 
 CUDAAdvisor is a profiling tool for GPU.
 
@@ -6,9 +6,8 @@ CUDAAdvisor is a profiling tool for GPU.
   - GPU server with cc 3.5 or later
  
 ## Software Depebdencies
-  - LLVM 4.0 or later
-  - CUDA 7.0 or later
-  - cmake 3.4.3 or later
+  - LLVM 14.0 
+  - CUDA 11.5 
 
 ## Installation
 Your system should have LLVM installed.
@@ -23,14 +22,22 @@ And copy the fowllowing lines into `lib/Transforms/CMakeLists.txt`
 
 Go to the top level of your LLVM build directory and rebuild, you should get a new file `lib/LLVMCudaAdvisor.so`. You are able to use the **opt** tool to access it. There is an exmple in `src/` subdirectory and a template is provided.
 
-## Paper
-[CGO'18] CUDAAdvisor: LLVM-based Runtime Profiling for Modern GPUs
+## Running
+### Memory Bandwidth
+Use pass -memory-bandwidth on the device LLVM IR. (see make file)
+  - fname=<kernel-name>
+  - line-range=<start>-<end>
+In the src.cu file, add #include "bandwidth_helpers.cu"
+For printing the results, add computeBandwidth() after cudaSynchronise() call.
+### Compute Intensity
+Use pass -compute-intensity  on the device LLVM IR. (see make file)
+  - fname=<kernel-name>
+  - line-range=<start>-<end>
+In the src.cu file, add #include "compute_intensity.cu"
+For printing the results, add printComputeIntensity() after cudaSynchronise() call.
+
 
 ## Authors
-Du Shen, College of William and Mary
-
-Leon Shuaiwen Song, Pacific Northwest National Laboratory
-
-Ang Li, Pacific Northwest National Laboratory
-
-Xu Liu, College of William and Mary
+Nitya Bhamidipaty 
+Bolla Nehasree
+Nethi Keerthana
